@@ -99,8 +99,14 @@ pub enum ViewCommand {
         bracket: Option<Bracket>,
         /// Emit each frame at a quarter of its width and height and 16 samples,
         /// under its own `_draft` scene name: for judging what is in frame.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "preview")]
         draft: bool,
+        /// Write no scene: draw each camera (and candidate) on the CPU, flat-lit,
+        /// at half its width and height, as `<stem>_preview.png` — seconds per
+        /// frame, for placing a camera before a path tracer is asked about light.
+        /// Reads the campaign and `--prefabs` to assemble the world.
+        #[arg(long, conflicts_with = "world")]
+        preview: bool,
     },
     /// Emit an oblique exterior scene of the delve's built place — the storybook
     /// shot — from a build output's `render-plan.json`. The camera frames the
@@ -262,7 +268,8 @@ impl ViewCommand {
                 only,
                 bracket,
                 draft,
-            } => run_cameras(
+                preview,
+            } if !*preview => run_cameras(
                 build_dir,
                 campaign,
                 out,
@@ -274,6 +281,15 @@ impl ViewCommand {
                     bracket: *bracket,
                     draft: *draft,
                 },
+            ),
+            ViewCommand::Cameras { .. } => fail(
+                Diagnostic::error(
+                    DW_INPUT,
+                    "`delvec cameras --preview` assembles the world, and is run by the `delvec` \
+                     binary rather than this arm",
+                ),
+                json,
+                exit::INPUT,
             ),
             ViewCommand::Panorama {
                 build_dir,

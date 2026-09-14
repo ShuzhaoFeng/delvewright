@@ -537,26 +537,39 @@ pub struct EmitOptions {
     pub draft: bool,
 }
 
-/// Emit the scenes of a record against a build's `render-plan.json`.
-/// Byte-deterministic (ADR-0006): the same plan, record and options give the
-/// same bytes.
-pub fn emit(
-    plan_json: &[u8],
+/// The campaign a build's `render-plan.json` was written for.
+pub fn plan_campaign_id(plan_json: &[u8]) -> Result<String, Diagnostic> {
+    Ok(scene::parse_plan(plan_json)?.campaign_id)
+}
+
+/// The file a preview of a camera is written to: `<stem>_preview.png`.
+pub fn preview_file(campaign_id: &str, name: &str) -> String {
+    format!("{}_preview.png", camera_stem(campaign_id, name, false))
+}
+
+/// A preview frame is the stated one divided by this on each side.
+pub const PREVIEW_DIVISOR: u32 = 2;
+
+/// The cameras one run frames, in record order: the record's (or the `--only`
+/// selection), each followed by its bracket candidates. Refuses a record for
+/// another campaign than the build's, and an `--only` name the record lacks.
+pub fn selected(
+    campaign_id: &str,
     sheet: &CameraSheet,
-    opts: &EmitOptions,
-) -> Result<Emission, Diagnostic> {
-    let plan = scene::parse_plan(plan_json)?;
-    if plan.campaign_id != sheet.campaign_id {
+    only: &[String],
+    bracket: Option<&Bracket>,
+) -> Result<Vec<Camera>, Diagnostic> {
+    if campaign_id != sheet.campaign_id {
         return Err(Diagnostic::error(
             DW_INPUT,
             format!(
-                "{CAMERAS_FILE} is for `{}` and the build is `{}`: a camera's position means \
-                 something only in the world it was placed in",
-                sheet.campaign_id, plan.campaign_id
+                "{CAMERAS_FILE} is for `{}` and the build is `{campaign_id}`: a camera's position \
+                 means something only in the world it was placed in",
+                sheet.campaign_id
             ),
         ));
     }
-    for name in &opts.only {
+    for name in only {
         if !sheet.cameras.iter().any(|c| &c.name == name) {
             let names: Vec<&str> = sheet.cameras.iter().map(|c| c.name.as_str()).collect();
             return Err(Diagnostic::error(
@@ -568,24 +581,38 @@ pub fn emit(
             ));
         }
     }
+    let mut out = Vec::new();
+    for cam in &sheet.cameras {
+        if !only.is_empty() && !only.contains(&cam.name) {
+            continue;
+        }
+        match bracket {
+            Some(b) => out.extend(b.candidates(cam)),
+            None => out.push(cam.clone()),
+        }
+    }
+    Ok(out)
+}
+
+/// Emit the scenes of a record against a build's `render-plan.json`.
+/// Byte-deterministic (ADR-0006): the same plan, record and options give the
+/// same bytes.
+pub fn emit(
+    plan_json: &[u8],
+    sheet: &CameraSheet,
+    opts: &EmitOptions,
+) -> Result<Emission, Diagnostic> {
+    let plan = scene::parse_plan(plan_json)?;
+    let cameras = selected(&plan.campaign_id, sheet, &opts.only, opts.bracket.as_ref())?;
     let mut out = Emission {
         scenes: Vec::new(),
         cameras: Vec::new(),
     };
-    for cam in &sheet.cameras {
-        if !opts.only.is_empty() && !opts.only.contains(&cam.name) {
-            continue;
-        }
-        let set = match &opts.bracket {
-            Some(b) => b.candidates(cam),
-            None => vec![cam.clone()],
-        };
-        for c in set {
-            let stem = camera_stem(&plan.campaign_id, &c.name, opts.draft);
-            let scene = world_scene(&plan, &stem, &Frame::of(&c, opts.draft), &opts.world_path)?;
-            out.scenes.push((format!("{stem}.json"), scene.to_bytes()?));
-            out.cameras.push(c);
-        }
+    for c in cameras {
+        let stem = camera_stem(&plan.campaign_id, &c.name, opts.draft);
+        let scene = world_scene(&plan, &stem, &Frame::of(&c, opts.draft), &opts.world_path)?;
+        out.scenes.push((format!("{stem}.json"), scene.to_bytes()?));
+        out.cameras.push(c);
     }
     Ok(out)
 }
