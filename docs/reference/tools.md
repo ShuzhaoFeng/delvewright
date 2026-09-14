@@ -1251,7 +1251,7 @@ position and the rotation: `pos` is that position with 1.62 added to Y, `yaw`
 and `pitch` are copied, `fov` is the client's FOV setting. A page such as
 `viewer` emits the same object from its camera.
 
-Finding a camera, cheapest first — the page's step 14 is the procedure, and
+Finding a camera, cheapest first —
 [`showcase-shots.md`](showcase-shots.md) is the craft it applies:
 
 - **`--preview`** writes no scene: it assembles the world from `--campaign` and

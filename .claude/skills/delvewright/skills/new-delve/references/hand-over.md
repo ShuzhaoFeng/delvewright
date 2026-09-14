@@ -9,9 +9,14 @@ relative links into `media/`, small JPEGs, exterior or starting-scene shots
 only, picked from the visual-review set — never interiors or late-game
 locations. A localized `README.<code>.md` per declared language.
 
-**Storybook art is a showcase camera, rendered in Chunky** — the install from step 12. Every picture is one camera in `campaigns/<id>/design/cameras.json`, the record `delvec --prefabs "$DELVEWRIGHT_PREFABS" cameras "$D" --campaign campaigns/<id> -o "$D/shots/cameras"` reads, `D` being step 12's absolute `$DELVEWRIGHT_ENGINE/validation/delve-output`. Each camera states where the lens is, Minecraft's own yaw and pitch, a vertical `fov`, an `exposure`, the frame and its samples, and the approved image it `answers`. The camera goes **wherever the picture is best** — in the air, above a courtyard, in a corner above head height, outside a window. No walk, anchor cell or `DW0893` line constrains it; those judge what a player sees, and this is a photograph.
-
-Find each camera the way `showcase-shots` in the engine's `docs/reference/` says, cheapest first: estimate it from the approved image — which side, how close, how high, what the point of interest is, never the drawing's exact pose; place it with `--preview` (flat, seconds); bracket it with `--bracket yaw=8,pitch=4,dolly=6,truck=3,rise=3` and lay the candidates on one `delvec contact-sheet` beside the approved image; copy the pick from `candidates.json`; draft it with `--draft`; then render the stated frame. The exterior hero is the building close and at a three-quarter angle, the terrain a margin; a room is shot from a corner into its point of interest, exposed for the room (8–16 for torch light) at about 768 samples. Look at every final frame and write down what is in it and why it beat the others; a frame you would not put on a front page is not handed over. Never hand-edit a scene JSON.
+Storybook art is Chunky — the install from step 12 — in two passes. Draft with
+`delvec snapshot` — fast, disposable, for judging *layout*: is the right thing in
+frame, from the right side, at the right distance. Then produce the shipped
+image with Chunky from
+`$DELVEWRIGHT_ENGINE/validation/render-shots.sh`'s scene set, plus `delvec --prefabs "$DELVEWRIGHT_PREFABS" panorama <build-dir> -o
+<dir>` for the whole-map hero shot every release owes (`--bearing` picks the
+corner). Never hand-edit a scene JSON: if the frame you want is not emittable,
+that is a `delvec render` gap to report, not a file to patch.
 
 **Every edition opens with the engine-version marker**, on its own line directly
 under the title. This is the one piece of internal machinery a storybook carries
