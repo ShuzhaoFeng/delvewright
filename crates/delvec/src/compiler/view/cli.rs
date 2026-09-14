@@ -784,6 +784,27 @@ fn run_viewer(inputs: &[PathBuf], out: &Path, title: Option<&str>, vopts: &ViewO
         }
         eprintln!("{}", enclosure.line(model.id()));
     }
+    // What each anchor's point of view shows (`DW0893`), measured off the same
+    // bytes before the page exists: a preset pressed against a wall is said
+    // here, beside the room camera the page offers for the same anchor.
+    for model in &models {
+        let frames = crate::compiler::view::sight::anchor_frames(model.structure(), model.meta());
+        for d in crate::compiler::view::sight::frames_findings(
+            &frames,
+            |a| format!("{} point of view `pov:{a}`", model.id()),
+            |a| format!("{} room view `room:{a}`", model.id()),
+        ) {
+            d.print(vopts.json);
+        }
+        eprintln!(
+            "{}",
+            crate::compiler::view::sight::frames_line(
+                model.id(),
+                model.meta().map_or(0, |m| m.anchors.len()),
+                &frames
+            )
+        );
+    }
     // The light verdict's one escape is a COUNT off these same bytes, never a
     // word in the document — see `LightVerdict::of`.
     let light = showing::LightVerdict::of(

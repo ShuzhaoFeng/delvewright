@@ -346,6 +346,111 @@ pub fn stand_back(
     })
 }
 
+/// One anchor's two eye-level frames as a door that offers the anchor's own
+/// point of view takes them: a body on the anchor's cell exactly, and the room
+/// camera stood back along the same facing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnchorFrames {
+    /// The anchor's full name.
+    pub anchor: String,
+    /// Its declared facing keyword.
+    pub facing: String,
+    /// Its declared cell — where the point-of-view body's feet are.
+    pub cell: [i32; 3],
+    /// The frame from the anchor's own cell.
+    pub pov: Sight,
+    /// The room camera, when a body can stand on the anchor at all.
+    pub room: Option<(Stand, Sight)>,
+}
+
+/// Every anchor that declares a position and a horizontal facing, in name
+/// order, with both of its frames measured. Anchors without both have no eye
+/// frame to measure and are not in the list; [`frames_line`] counts them.
+pub fn anchor_frames(
+    st: &Structure,
+    meta: Option<&crate::compiler::view::meta::PrefabMeta>,
+) -> Vec<AnchorFrames> {
+    let Some(meta) = meta else {
+        return Vec::new();
+    };
+    let grid = grid_of(st);
+    let cells = Cells::of(st);
+    let mut out = Vec::new();
+    for (name, a) in &meta.anchors {
+        let (Some(cell), Some(facing)) = (a.pos, a.facing.as_deref()) else {
+            continue;
+        };
+        let Some(step) = horizontal_step(facing) else {
+            continue;
+        };
+        let pov = Sight::measure(&grid, &level_camera(eye_of(cell), step));
+        let room = stand_back(&cells, &grid, cell, step).map(|stand| {
+            (
+                stand,
+                Sight::measure(&grid, &level_camera(stand.eye(), step)),
+            )
+        });
+        out.push(AnchorFrames {
+            anchor: name.clone(),
+            facing: facing.to_string(),
+            cell,
+            pov,
+            room,
+        });
+    }
+    out
+}
+
+/// The binding line for [`anchor_frames`], printed on every run with its
+/// zeroes.
+pub fn frames_line(id: &str, declared: usize, frames: &[AnchorFrames]) -> String {
+    let blind_pov = frames.iter().filter(|f| f.pov.is_blind()).count();
+    let rooms: Vec<&(Stand, Sight)> = frames.iter().filter_map(|f| f.room.as_ref()).collect();
+    let blind_room = rooms.iter().filter(|(_, s)| s.is_blind()).count();
+    let max_back = rooms.iter().map(|(st, _)| st.back).max().unwrap_or(0);
+    format!(
+        "sight: `{id}` — {} of {declared} anchor(s) declare a position and a horizontal facing; \
+         blind (more than half the frame a surface within {ARM_REACH_BLOCKS} blocks): {blind_pov} \
+         of {} point-of-view frame(s), {blind_room} of {} room frame(s); room cameras stood \
+         0..{max_back} block(s) back",
+        frames.len(),
+        frames.len(),
+        rooms.len(),
+    )
+}
+
+/// The `DW0893`s [`anchor_frames`] owes, one per blind frame. `pov_frame` and
+/// `room_frame` name the two frames for an anchor, in the words of the door.
+pub fn frames_findings(
+    frames: &[AnchorFrames],
+    pov_frame: impl Fn(&str) -> String,
+    room_frame: impl Fn(&str) -> String,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for f in frames {
+        let room_name = room_frame(&f.anchor);
+        let room = f.room.as_ref().map(|(st, s)| (room_name.as_str(), st, s));
+        if f.pov.is_blind() {
+            out.push(blind_diagnostic(
+                &pov_frame(&f.anchor),
+                &f.anchor,
+                &f.facing,
+                f.cell,
+                &f.pov,
+                room,
+            ));
+        }
+        if let Some((st, s)) = &f.room
+            && s.is_blind()
+        {
+            out.push(blind_diagnostic(
+                &room_name, &f.anchor, &f.facing, st.cell, s, room,
+            ));
+        }
+    }
+    out
+}
+
 /// The `DW0893` a blind frame owes its reader.
 ///
 /// `frame` names the image (`<stem>/eye-gate`, or a viewer preset), `anchor`
