@@ -23,11 +23,12 @@ use clap::Subcommand;
 
 use crate::compiler::view::assets::Assets;
 use crate::compiler::view::blockcolor::Deriver;
+use crate::compiler::view::camera::{self, Bracket, EmitOptions};
 use crate::compiler::view::diag::{
     DW_BINDING, DW_INPUT, DW_OUTPUT, DW_RANK_ORDER, DW_RENDER, DW_UNDERSPECIFIED_STATE,
     DW_UNRESOLVED_BLOCK, DW_VIEWER_RESOURCES, Diagnostic, exit,
 };
-use crate::compiler::view::panorama::{self, Bearing, PanoramaOptions};
+use crate::compiler::view::panorama::{self, Bearing, PanoramaOptions, Subject};
 use crate::compiler::view::scene::{self, SceneOptions};
 use crate::compiler::view::sheet::{self, ScoreSet, SheetOptions};
 use crate::compiler::view::{cache, index, nbt, showing, viewer};
@@ -67,9 +68,44 @@ pub enum ViewCommand {
         #[arg(long, default_value_t = DEFAULT_SIZE)]
         size: u32,
     },
+    /// Emit a Chunky scene per showcase camera a campaign states in
+    /// `design/cameras.json` — a camera on the assembled world, estimated from the
+    /// approved image it answers or placed by hand — against a build's
+    /// `render-plan.json`.
+    Cameras {
+        /// A `delvec build` output directory (containing `render-plan.json`).
+        build_dir: PathBuf,
+        /// The campaign directory: its `design/cameras.json` is read, and every
+        /// camera's `answers` is held to its `design.json`.
+        #[arg(long)]
+        campaign: PathBuf,
+        /// Output directory for the scene JSONs.
+        #[arg(short, long)]
+        out: PathBuf,
+        /// The world save the scenes load (default `<build-dir>/world`, where
+        /// `validation/world-save.sh` writes it). Refused unless it holds
+        /// `level.dat` and a region file; written into the scenes as an absolute
+        /// path.
+        #[arg(long)]
+        world: Option<PathBuf>,
+        /// Only this camera, by name (repeatable).
+        #[arg(long)]
+        only: Vec<String>,
+        /// Emit, beside each camera, the camera moved each way by each step —
+        /// `yaw=8,pitch=4,fov=10,dolly=6,rise=3`, any subset — and write every
+        /// candidate to `candidates.json` in the output directory, in the record
+        /// format.
+        #[arg(long, value_parser = Bracket::parse)]
+        bracket: Option<Bracket>,
+        /// Emit each frame at a quarter of its width and height and 16 samples,
+        /// under its own `_draft` scene name: for judging what is in frame.
+        #[arg(long)]
+        draft: bool,
+    },
     /// Emit an oblique exterior scene of the delve's built place — the storybook
     /// shot — from a build output's `render-plan.json`. The camera frames the
-    /// placed areas; the ground a horizon built around them is loaded, not framed.
+    /// subject (the placed areas unless `--subject` names anchors); the ground a
+    /// horizon built around them is loaded, not framed.
     Panorama {
         /// A `delvec build` output directory (containing `render-plan.json`).
         build_dir: PathBuf,
@@ -92,6 +128,18 @@ pub enum ViewCommand {
               value_parser = clap::value_parser!(u8).range(
                   i64::from(*panorama::PITCH_RANGE.start())..=i64::from(*panorama::PITCH_RANGE.end())))]
         pitch: u8,
+        /// Vertical field of view, degrees: a narrower frame stands further back,
+        /// which is how a building is shown without wide-angle distortion.
+        #[arg(long, default_value_t = panorama::FOV_DEG as u8,
+              value_parser = clap::value_parser!(u8).range(
+                  i64::from(*panorama::FOV_RANGE.start())..=i64::from(*panorama::FOV_RANGE.end())))]
+        fov: u8,
+        /// What the camera is fitted to: `layout` (the placed areas), or the
+        /// building named by the anchors that stand in it —
+        /// `anchor/stop-gate,anchor/stop-kitchen` — whose horizontal span is framed
+        /// at the layout's full height.
+        #[arg(long, default_value = "layout", value_parser = Subject::parse)]
+        subject: Subject,
         /// Path-tracing sample target: ~64 for a draft, ~300 for release art.
         #[arg(long, default_value_t = panorama::DEFAULT_SPP)]
         spp: u32,
@@ -206,12 +254,35 @@ impl ViewCommand {
                     size: *size,
                 },
             ),
+            ViewCommand::Cameras {
+                build_dir,
+                campaign,
+                out,
+                world,
+                only,
+                bracket,
+                draft,
+            } => run_cameras(
+                build_dir,
+                campaign,
+                out,
+                world.as_deref(),
+                json,
+                EmitOptions {
+                    world_path: String::new(),
+                    only: only.clone(),
+                    bracket: *bracket,
+                    draft: *draft,
+                },
+            ),
             ViewCommand::Panorama {
                 build_dir,
                 out,
                 world,
                 bearing,
                 pitch,
+                fov,
+                subject,
                 spp,
                 width,
                 height,
@@ -227,6 +298,8 @@ impl ViewCommand {
                     spp_target: *spp,
                     bearing: *bearing,
                     pitch_deg: *pitch,
+                    fov_deg: *fov,
+                    subject: subject.clone(),
                 },
             ),
             ViewCommand::ContactSheet {
@@ -455,7 +528,22 @@ fn run_panorama(
         Ok(w) => w,
         Err(d) => return fail(d, json, exit::INPUT),
     };
-    let pano = match panorama::panorama_from_plan(&bytes, &opts) {
+    // An anchor subject is resolved against the anchors this build placed; the
+    // default subject reads nothing but the plan.
+    let anchors = match &opts.subject {
+        Subject::Layout => Vec::new(),
+        Subject::Anchors(_) => {
+            let path = build_dir.join("creator-datapack").join("layout.json");
+            match std::fs::read(&path)
+                .map_err(|e| Diagnostic::error(DW_INPUT, format!("read {}: {e}", path.display())))
+                .and_then(|b| panorama::resolved_anchors(&b))
+            {
+                Ok(a) => a,
+                Err(d) => return fail(d, json, exit::INPUT),
+            }
+        }
+    };
+    let pano = match panorama::panorama_from_plan(&bytes, &anchors, &opts) {
         Ok(s) => s,
         Err(d) => return fail(d, json, exit::INPUT),
     };
@@ -476,13 +564,122 @@ fn run_panorama(
         scene::CHUNKY_CORE
     );
     eprintln!(
-        "subject: the placed areas, box {smin:?}..{smax:?} — covers {:.0}% of the frame \
-         ({:.0}% of its width x {:.0}% of its height) from bearing {} at {} degrees",
+        "subject: {}, box {smin:?}..{smax:?} — covers {:.0}% of the frame \
+         ({:.0}% of its width x {:.0}% of its height) from bearing {} at {} degrees, fov {}. \
+         That share is a floor, never the verdict: look at the frame",
+        match &opts.subject {
+            Subject::Layout => "the placed areas".to_string(),
+            Subject::Anchors(names) => format!("the building {} anchor(s) stand in", names.len()),
+        },
         pano.span.fill() * 100.0,
         pano.span.width * 100.0,
         pano.span.height * 100.0,
         opts.bearing.name(),
-        opts.pitch_deg
+        opts.pitch_deg,
+        opts.fov_deg
+    );
+    // The solved camera, in the record format: the frame is kept or refined by
+    // copying this into `design/cameras.json` and naming the image it answers.
+    match serde_json::to_string(&pano.record) {
+        Ok(line) => eprintln!(
+            "camera record (set `answers`, then keep or refine it in {}): {line}",
+            camera::CAMERAS_FILE
+        ),
+        Err(e) => {
+            return fail(
+                Diagnostic::error(DW_OUTPUT, format!("serialize the camera record: {e}")),
+                json,
+                exit::OUTPUT,
+            );
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_cameras(
+    build_dir: &Path,
+    campaign: &Path,
+    out: &Path,
+    world: Option<&Path>,
+    json: bool,
+    mut opts: EmitOptions,
+) -> ExitCode {
+    let read = |path: PathBuf| {
+        std::fs::read(&path)
+            .map_err(|e| Diagnostic::error(DW_INPUT, format!("read {}: {e}", path.display())))
+    };
+    let plan = match read(build_dir.join("render-plan.json")) {
+        Ok(b) => b,
+        Err(d) => return fail(d, json, exit::INPUT),
+    };
+    let sheet =
+        match read(campaign.join(camera::CAMERAS_FILE)).and_then(|b| camera::parse_sheet(&b)) {
+            Ok(s) => s,
+            Err(d) => return fail(d, json, exit::INPUT),
+        };
+    let rows = match read(campaign.join("design.json")).and_then(|b| camera::reference_names(&b)) {
+        Ok(r) => r,
+        Err(d) => return fail(d, json, exit::INPUT),
+    };
+    let unanswered = match camera::bind_answers(&sheet, &rows) {
+        Ok(u) => u,
+        Err(d) => return fail(d, json, exit::INPUT),
+    };
+    opts.world_path = match resolve_world(build_dir, world) {
+        Ok(w) => w,
+        Err(d) => return fail(d, json, exit::INPUT),
+    };
+    let emission = match camera::emit(&plan, &sheet, &opts) {
+        Ok(e) => e,
+        Err(d) => return fail(d, json, exit::INPUT),
+    };
+    let purged = match write_scenes(out, &emission.scenes) {
+        Ok(n) => n,
+        Err((d, code)) => return fail(d, json, code),
+    };
+    if opts.bracket.is_some() {
+        let path = out.join(camera::CANDIDATES_FILE);
+        let written =
+            camera::candidates_bytes(&sheet.campaign_id, &emission.cameras).and_then(|b| {
+                std::fs::write(&path, b).map_err(|e| {
+                    Diagnostic::error(DW_OUTPUT, format!("write {}: {e}", path.display()))
+                })
+            });
+        if let Err(d) = written {
+            return fail(d, json, exit::OUTPUT);
+        }
+    }
+    let stated = if opts.only.is_empty() {
+        sheet.cameras.len()
+    } else {
+        opts.only.len()
+    };
+    eprintln!(
+        "emitted {} Chunky scene(s) for {stated} of {} stated camera(s) -> {} ({purged} stale cache \
+         file(s) purged; {}render with {}){}",
+        emission.scenes.len(),
+        sheet.cameras.len(),
+        out.display(),
+        if opts.draft { "drafts, " } else { "" },
+        scene::CHUNKY_CORE,
+        if opts.bracket.is_some() {
+            format!(
+                "; every candidate is in {}",
+                out.join(camera::CANDIDATES_FILE).display()
+            )
+        } else {
+            String::new()
+        }
+    );
+    eprintln!(
+        "answers: {} of {} approved image(s) in design.json have a camera{}",
+        rows.len() - unanswered.len(),
+        rows.len(),
+        if unanswered.is_empty() {
+            String::new()
+        } else {
+            format!("; none answers {}", unanswered.join(", "))
+        }
     );
     ExitCode::SUCCESS
 }

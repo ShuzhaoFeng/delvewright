@@ -14,7 +14,11 @@
 //!   a reviewer drives.
 //! - [`scene`] — Chunky scene emission from the compiler's `render-plan.json`
 //!   (the free-camera path behind the first-person player-POV shots).
-//! - [`panorama`] — the oblique exterior of the built place, the storybook shot.
+//! - [`panorama`] — the oblique exterior of the built place, the storybook shot,
+//!   solved for a subject.
+//! - [`camera`] — the showcase camera record (`design/cameras.json`): a stated
+//!   camera on the assembled world, estimated from an approved image or placed
+//!   by hand, and its Chunky scene — the one reader of that record.
 //! - [`sheet`] — the contact sheet: many candidate renders on one page, ordered
 //!   by a similarity score that RANKS and never gates.
 //! - [`index`] — shot index: (image ↔ expect) pairs for the vision reviewer.
@@ -49,6 +53,7 @@
 pub mod assets;
 pub mod blockcolor;
 pub mod cache;
+pub mod camera;
 pub mod cli;
 pub mod detect;
 pub mod diag;

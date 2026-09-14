@@ -71,10 +71,9 @@
 //! `night` or `midnight` renders dark, which is what a night delve looks like;
 //! nothing here brightens a scene to make a picture come out.
 
+use crate::compiler::view::camera::{self, Frame};
 use crate::compiler::view::diag::{DW_INPUT, Diagnostic};
-use crate::compiler::view::scene::{
-    self, ChunkyCamera, ChunkyScene, Orientation, WorldRef, Xyz, chunky_orientation,
-};
+use crate::compiler::view::scene;
 
 /// Default camera pitch, degrees below horizontal — the 45° oblique.
 pub const DEFAULT_PITCH_DEG: u8 = 45;
@@ -83,9 +82,13 @@ pub const DEFAULT_PITCH_DEG: u8 = 45;
 /// "right" axis degenerates; below 5° the camera is level with what it frames.
 pub const PITCH_RANGE: std::ops::RangeInclusive<u8> = 5..=85;
 
-/// Vertical field of view, degrees. Narrower than the 70° first-person default: a
-/// view of a built place wants low distortion, not reach.
+/// Default vertical field of view, degrees. Narrower than the 70° first-person
+/// default: a view of a built place wants low distortion, not reach.
 pub const FOV_DEG: f64 = 40.0;
+
+/// The vertical fields of view a panorama accepts, degrees: from a long lens far
+/// back to a wide one close in.
+pub const FOV_RANGE: std::ops::RangeInclusive<u8> = 10..=90;
 
 /// Framing margin: the solved distance leaves this much slack around the
 /// subject's tightest fit (1.0 = corners exactly on the frame edge).
@@ -310,13 +313,14 @@ pub fn frame(
     max: [i32; 3],
     bearing: Bearing,
     pitch_deg: u8,
+    fov_deg: f64,
     aspect: f64,
 ) -> (PanoramaCamera, SubjectSpan) {
     let (centre, corners) = box_corners(min, max);
     let view = basis(bearing, pitch_deg);
     let (f, right, up) = view;
 
-    let tan_v = (FOV_DEG.to_radians() / 2.0).tan();
+    let tan_v = (fov_deg.to_radians() / 2.0).tan();
     let tan_h = tan_v * aspect;
     let rel: Vec<[f64; 3]> = corners
         .iter()
@@ -375,7 +379,7 @@ pub fn frame(
                 .atan2((f[0] * f[0] + f[2] * f[2]).sqrt())
                 .to_degrees(),
         ),
-        fov_deg: FOV_DEG,
+        fov_deg,
     };
     // Measured from the camera as emitted (rounded), so it describes the bytes.
     let (x0, x1, y0, y1) = projected_extent(&corners, camera.pos, view);
@@ -400,6 +404,103 @@ pub struct PanoramaOptions {
     pub bearing: Bearing,
     /// Degrees below horizontal, within [`PITCH_RANGE`].
     pub pitch_deg: u8,
+    /// Vertical field of view, degrees, within [`FOV_RANGE`].
+    pub fov_deg: u8,
+    /// What the camera is fitted to.
+    pub subject: Subject,
+}
+
+/// What a panorama frames.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Subject {
+    /// The placed areas: the layout AABB.
+    #[default]
+    Layout,
+    /// The building the named anchors stand in: their cells' horizontal span, at
+    /// the layout's full height.
+    Anchors(Vec<String>),
+}
+
+impl Subject {
+    /// Parse `layout` or `anchor/<a>[,anchor/<b>…]`.
+    pub fn parse(spec: &str) -> Result<Subject, String> {
+        if spec == "layout" {
+            return Ok(Subject::Layout);
+        }
+        let names: Vec<String> = spec
+            .split(',')
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect();
+        if names.is_empty() || names.iter().any(|n| !n.starts_with("anchor/")) {
+            return Err(format!(
+                "`{spec}` is not a subject: `layout`, or anchors by their full names \
+                 (`anchor/stop-gate,anchor/stop-kitchen`)"
+            ));
+        }
+        Ok(Subject::Anchors(names))
+    }
+}
+
+/// The anchors a build resolved, from `creator-datapack/layout.json`: full name →
+/// world cell.
+pub fn resolved_anchors(layout_json: &[u8]) -> Result<Vec<(String, [i32; 3])>, Diagnostic> {
+    #[derive(serde::Deserialize)]
+    struct Layout {
+        anchors: Vec<Anchor>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Anchor {
+        id: String,
+        pos: [i32; 3],
+    }
+    let layout: Layout = serde_json::from_slice(layout_json)
+        .map_err(|e| Diagnostic::error(DW_INPUT, format!("parse layout.json: {e}")))?;
+    Ok(layout.anchors.into_iter().map(|a| (a.id, a.pos)).collect())
+}
+
+/// The box a subject names, over a plan's layout and a build's resolved anchors.
+///
+/// Anchors name *where on the plan* the building is — a body stands in every
+/// room of it — and never how tall it is, because nobody stands on a roof ridge.
+/// So the box is the anchors' horizontal span, from the layout's floor to its top.
+/// The walls outside the outermost anchors are the frame's margin to hold.
+pub fn subject_box(
+    subject: &Subject,
+    layout: ([i32; 3], [i32; 3]),
+    anchors: &[(String, [i32; 3])],
+) -> Result<([i32; 3], [i32; 3]), Diagnostic> {
+    let names = match subject {
+        Subject::Layout => return Ok(layout),
+        Subject::Anchors(names) => names,
+    };
+    let mut lo = [i32::MAX, layout.0[1], i32::MAX];
+    let mut hi = [i32::MIN, layout.1[1], i32::MIN];
+    for name in names {
+        let (_, pos) = anchors.iter().find(|(id, _)| id == name).ok_or_else(|| {
+            Diagnostic::error(
+                DW_INPUT,
+                format!(
+                    "the subject names `{name}`, which this build resolved no anchor for. \
+                     Resolved: {}",
+                    if anchors.is_empty() {
+                        "none".to_string()
+                    } else {
+                        anchors
+                            .iter()
+                            .map(|(id, _)| id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                ),
+            )
+        })?;
+        for a in [0, 2] {
+            lo[a] = lo[a].min(pos[a]);
+            hi[a] = hi[a].max(pos[a]);
+        }
+    }
+    Ok((lo, hi))
 }
 
 impl Default for PanoramaOptions {
@@ -411,6 +512,8 @@ impl Default for PanoramaOptions {
             spp_target: DEFAULT_SPP,
             bearing: Bearing::Se,
             pitch_deg: DEFAULT_PITCH_DEG,
+            fov_deg: FOV_DEG as u8,
+            subject: Subject::Layout,
         }
     }
 }
@@ -421,20 +524,26 @@ pub struct Panorama {
     /// `<stem>.json`; the stem is also the Chunky scene `name`.
     pub file_name: String,
     pub bytes: Vec<u8>,
-    /// The subject box the camera was solved for: the plan's layout AABB.
+    /// The subject box the camera was solved for.
     pub subject: ([i32; 3], [i32; 3]),
     /// How much of the frame that box occupies from the emitted camera.
     pub span: SubjectSpan,
+    /// The solved camera, in the showcase record's own format
+    /// ([`crate::compiler::view::camera::Camera`]) — so a creator keeps or refines
+    /// this frame by copying it into `design/cameras.json`.
+    pub record: camera::Camera,
 }
 
-/// Emit the panorama scene for a `render-plan.json`. Byte-deterministic like
-/// [`crate::compiler::view::scene`].
+/// Emit the panorama scene for a `render-plan.json`. `anchors` is the build's
+/// resolved anchors ([`resolved_anchors`]), read only by an anchor subject.
+/// Byte-deterministic like [`crate::compiler::view::scene`].
 pub fn panorama_from_plan(
     plan_json: &[u8],
+    anchors: &[(String, [i32; 3])],
     opts: &PanoramaOptions,
 ) -> Result<Panorama, Diagnostic> {
     let plan = scene::parse_plan(plan_json)?;
-    let sky = scene::plan_sky(&plan)?;
+    scene::plan_sky(&plan)?;
     if opts.width == 0 || opts.height == 0 {
         return Err(Diagnostic::error(
             DW_INPUT,
@@ -455,85 +564,78 @@ pub fn panorama_from_plan(
             ),
         ));
     }
-    // The subject is the placed areas. The ground a horizon built around them is
-    // loaded (chunk list, Y clip) but never framed — see the module docs.
-    let subject = (plan.layout_aabb.min, plan.layout_aabb.max);
-    let (loaded_min, loaded_max) = scene::loaded_extent(&plan.layout_aabb, plan.horizon);
+    if !FOV_RANGE.contains(&opts.fov_deg) {
+        return Err(Diagnostic::error(
+            DW_INPUT,
+            format!(
+                "field of view {}° is outside {}..={}°",
+                opts.fov_deg,
+                FOV_RANGE.start(),
+                FOV_RANGE.end()
+            ),
+        ));
+    }
+    // The subject is what the creator names — the placed areas by default. The
+    // ground a horizon built around them is loaded (chunk list, Y clip) but never
+    // framed — see the module docs.
+    let subject = subject_box(
+        &opts.subject,
+        (plan.layout_aabb.min, plan.layout_aabb.max),
+        anchors,
+    )?;
     let aspect = f64::from(opts.width) / f64::from(opts.height);
-    let (cam, span) = frame(subject.0, subject.1, opts.bearing, opts.pitch_deg, aspect);
-    // File name == scene `name`, so Chunky's own save lands back on this file and
-    // its caches share the stem (see `scene::scene_file_stem`). The pitch is in
-    // the stem because two pitches from one bearing are two different pictures.
-    let stem = scene::scene_file_stem(
-        &plan.campaign_id,
-        &format!("panorama_{}_{}", opts.bearing.name(), opts.pitch_deg),
+    let (cam, span) = frame(
+        subject.0,
+        subject.1,
+        opts.bearing,
+        opts.pitch_deg,
+        f64::from(opts.fov_deg),
+        aspect,
     );
+    // File name == scene `name`, so Chunky's own save lands back on this file and
+    // its caches share the stem (see `scene::scene_file_stem`). Every choice that
+    // makes a different picture is in the stem: the bearing, the pitch, and — when
+    // not the default — the field of view and a named subject.
+    let mut shot = format!("panorama_{}_{}", opts.bearing.name(), opts.pitch_deg);
+    if f64::from(opts.fov_deg) != FOV_DEG {
+        shot.push_str(&format!("_fov{}", opts.fov_deg));
+    }
+    if opts.subject != Subject::Layout {
+        shot.push_str("_anchors");
+    }
+    let stem = scene::scene_file_stem(&plan.campaign_id, &shot);
 
-    let scene = ChunkyScene {
-        sdf_version: 9,
-        name: stem.clone(),
+    let frame = Frame {
+        pos: cam.pos,
+        plan_yaw_deg: cam.yaw_deg,
+        pitch_deg: cam.pitch_deg,
+        fov_deg: cam.fov_deg,
+        // A panorama is the world as the path tracer measures it.
+        exposure: 1.0,
         width: opts.width,
         height: opts.height,
-        y_clip_min: (loaded_min[1] - 8).max(-64),
-        y_clip_max: (loaded_max[1] + 16).min(320),
-        exposure: 1.0,
-        postprocess: "GAMMA",
-        output_mode: "PNG",
-        render_time: 0,
-        spp: 0,
-        spp_target: opts.spp_target,
-        ray_depth: 5,
-        path_trace: true,
-        dump_frequency: 500,
-        save_snapshots: false,
-        emitters_enabled: true,
-        emitter_intensity: 13.0,
-        sun_enabled: true,
-        still_water: false,
-        water_world_enabled: None,
-        water_world_height: None,
-        water_world_height_offset_enabled: None,
-        water_world_clip_enabled: None,
-        sun: Some(scene::sun_at(sky.daytime_ticks)),
-        // An exterior frame of the built place; the night-vision review
-        // emulation belongs to declared-dark POV shots and never applies here —
-        // including at an hour that renders it dark, which is a fact about the
-        // delve and not a legibility problem to emulate away.
-        materials: None,
-        delvewright_review_policy: None,
-        world: WorldRef {
-            path: opts.world_path.clone(),
-            dimension: 0,
-        },
-        camera: ChunkyCamera {
-            name: "camera 1",
-            position: Xyz {
-                x: cam.pos[0],
-                y: cam.pos[1],
-                z: cam.pos[2],
-            },
-            orientation: round_orientation(chunky_orientation(cam.yaw_deg, cam.pitch_deg)),
-            projection_mode: "PINHOLE",
-            fov: cam.fov_deg,
-        },
-        chunk_list: scene::chunk_list(loaded_min, loaded_max),
-    }
-    .with_water_world(scene::water_world(plan.horizon));
+        spp: opts.spp_target,
+    };
+    let scene = camera::world_scene(&plan, &stem, &frame, &opts.world_path)?;
 
     Ok(Panorama {
         file_name: format!("{stem}.json"),
         bytes: scene.to_bytes()?,
         subject,
         span,
+        record: camera::Camera {
+            answers: String::new(),
+            exposure: 1.0,
+            fov: cam.fov_deg,
+            height: opts.height,
+            name: shot.replace('_', "-"),
+            pitch: cam.pitch_deg,
+            pos: cam.pos,
+            spp: opts.spp_target,
+            width: opts.width,
+            yaw: scene::round6(camera::minecraft_yaw(cam.yaw_deg)),
+        },
     })
-}
-
-fn round_orientation(o: Orientation) -> Orientation {
-    Orientation {
-        roll: round6(o.roll),
-        pitch: round6(o.pitch),
-        yaw: round6(o.yaw),
-    }
 }
 
 #[cfg(test)]
@@ -560,7 +662,7 @@ mod tests {
 
     #[test]
     fn se_camera_stands_over_the_south_east_corner_looking_down_at_45() {
-        let (c, _) = frame(MIN, MAX, Bearing::Se, 45, 1.0);
+        let (c, _) = frame(MIN, MAX, Bearing::Se, 45, FOV_DEG, 1.0);
         assert_eq!(c.pitch_deg, 45.0);
         assert_eq!(c.yaw_deg, 135.0, "SE camera looks north-west");
         assert_eq!(c.fov_deg, FOV_DEG);
@@ -583,7 +685,7 @@ mod tests {
             (Bearing::S, 90.0, 0.0, 1.0),
             (Bearing::W, 0.0, -1.0, 0.0),
         ] {
-            let (c, _) = frame(MIN, MAX, b, 30, WIDE);
+            let (c, _) = frame(MIN, MAX, b, 30, FOV_DEG, WIDE);
             assert_eq!(c.yaw_deg.abs(), f64::abs(yaw), "{b:?}: {c:?}");
             assert_eq!(c.pitch_deg, 30.0, "{b:?}");
             if sx != 0.0 {
@@ -608,7 +710,7 @@ mod tests {
         for b in Bearing::ALL {
             for pitch in [5u8, 15, 30, 45, 70, 85] {
                 for aspect in [1.0, WIDE, 0.5] {
-                    let (c, span) = frame(MIN, MAX, b, pitch, aspect);
+                    let (c, span) = frame(MIN, MAX, b, pitch, FOV_DEG, aspect);
                     let (_, corners) = box_corners(MIN, MAX);
                     let (f, right, up) = view_of(&c);
                     let tan_v = (c.fov_deg.to_radians() / 2.0).tan();
@@ -673,7 +775,7 @@ mod tests {
         let mut judged = 0;
         for (what, min, max) in subjects {
             for b in Bearing::ALL.into_iter().filter(|b| b.is_corner()) {
-                let (_, span) = frame(min, max, b, DEFAULT_PITCH_DEG, aspect);
+                let (_, span) = frame(min, max, b, DEFAULT_PITCH_DEG, FOV_DEG, aspect);
                 assert!(
                     span.fill() >= 1.0 / 3.0,
                     "{what} from {b:?}: the subject covers {:.3} of the frame ({:.3} × {:.3})",
@@ -694,7 +796,7 @@ mod tests {
 
     #[test]
     fn a_degenerate_layout_still_gets_a_usable_camera() {
-        let (c, _) = frame([0, 64, 0], [0, 64, 0], Bearing::Se, 45, 1.0);
+        let (c, _) = frame([0, 64, 0], [0, 64, 0], Bearing::Se, 45, FOV_DEG, 1.0);
         let d = ((c.pos[0] - 0.5).powi(2) + (c.pos[1] - 64.5).powi(2) + (c.pos[2] - 0.5).powi(2))
             .sqrt();
         assert!(d >= MIN_DISTANCE - 1e-6, "camera inside the block: {c:?}");
@@ -715,10 +817,10 @@ mod tests {
     /// column of the landform so the place does not stand in a void.
     #[test]
     fn a_valley_frames_the_layout_and_loads_the_landform() {
-        let p = panorama_from_plan(VALLEY, &PanoramaOptions::default()).unwrap();
+        let p = panorama_from_plan(VALLEY, &[], &PanoramaOptions::default()).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&p.bytes).unwrap();
         let aspect = f64::from(DEFAULT_WIDTH) / f64::from(DEFAULT_HEIGHT);
-        let (want, span) = frame([0, 60, 0], [31, 79, 31], Bearing::Se, 45, aspect);
+        let (want, span) = frame([0, 60, 0], [31, 79, 31], Bearing::Se, 45, FOV_DEG, aspect);
         assert_eq!(v["camera"]["position"]["x"], serde_json::json!(want.pos[0]));
         assert_eq!(v["camera"]["position"]["y"], serde_json::json!(want.pos[1]));
         assert_eq!(v["camera"]["position"]["z"], serde_json::json!(want.pos[2]));
@@ -754,7 +856,7 @@ mod tests {
                 bearing: b,
                 ..Default::default()
             };
-            let p = panorama_from_plan(MINI, &opts).unwrap();
+            let p = panorama_from_plan(MINI, &[], &opts).unwrap();
             let v: serde_json::Value = serde_json::from_slice(&p.bytes).unwrap();
             assert_eq!(v["sun"]["altitude"], serde_json::json!(expected.altitude));
             assert_eq!(v["sun"]["azimuth"], serde_json::json!(expected.azimuth));
@@ -769,7 +871,7 @@ mod tests {
     fn a_panorama_of_a_plan_with_no_hour_is_refused() {
         let no_sky = br#"{"campaign_id":"c","layout_aabb":{"min":[0,64,0],"max":[1,65,1]},
           "shots":[]}"#;
-        let err = panorama_from_plan(no_sky, &PanoramaOptions::default()).unwrap_err();
+        let err = panorama_from_plan(no_sky, &[], &PanoramaOptions::default()).unwrap_err();
         assert_eq!(err.code, DW_INPUT, "{err:?}");
     }
 
@@ -794,7 +896,7 @@ mod tests {
             },
         ];
         for opts in &refused {
-            let err = panorama_from_plan(MINI, opts).unwrap_err();
+            let err = panorama_from_plan(MINI, &[], opts).unwrap_err();
             assert_eq!(err.code, DW_INPUT, "{opts:?}");
         }
         for pitch in [5u8, 85] {
@@ -802,13 +904,16 @@ mod tests {
                 pitch_deg: pitch,
                 ..Default::default()
             };
-            assert!(panorama_from_plan(MINI, &opts).is_ok(), "pitch {pitch}");
+            assert!(
+                panorama_from_plan(MINI, &[], &opts).is_ok(),
+                "pitch {pitch}"
+            );
         }
     }
 
     #[test]
     fn the_frame_size_is_the_one_asked_for() {
-        let p = panorama_from_plan(MINI, &PanoramaOptions::default()).unwrap();
+        let p = panorama_from_plan(MINI, &[], &PanoramaOptions::default()).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&p.bytes).unwrap();
         assert_eq!(v["width"], serde_json::json!(DEFAULT_WIDTH));
         assert_eq!(v["height"], serde_json::json!(DEFAULT_HEIGHT));
@@ -817,7 +922,7 @@ mod tests {
             height: 1024,
             ..Default::default()
         };
-        let p = panorama_from_plan(MINI, &opts).unwrap();
+        let p = panorama_from_plan(MINI, &[], &opts).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&p.bytes).unwrap();
         assert_eq!(v["width"], serde_json::json!(1024));
         assert_eq!(v["height"], serde_json::json!(1024));
@@ -825,14 +930,14 @@ mod tests {
 
     #[test]
     fn the_water_plane_is_raised_only_for_an_ocean_horizon() {
-        let ocean = panorama_from_plan(OCEAN, &PanoramaOptions::default()).unwrap();
+        let ocean = panorama_from_plan(OCEAN, &[], &PanoramaOptions::default()).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&ocean.bytes).unwrap();
         assert_eq!(v["waterWorldEnabled"], serde_json::json!(true));
         assert_eq!(v["waterWorldHeight"], serde_json::json!(62.875));
         assert_eq!(v["waterWorldHeightOffsetEnabled"], serde_json::json!(false));
         assert_eq!(v["waterWorldClipEnabled"], serde_json::json!(true));
 
-        let void = panorama_from_plan(MINI, &PanoramaOptions::default()).unwrap();
+        let void = panorama_from_plan(MINI, &[], &PanoramaOptions::default()).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&void.bytes).unwrap();
         assert!(v.get("waterWorldEnabled").is_none());
         assert!(v.get("waterWorldHeight").is_none());
@@ -848,7 +953,7 @@ mod tests {
                     pitch_deg: pitch,
                     ..Default::default()
                 };
-                let p = panorama_from_plan(OCEAN, &opts).unwrap();
+                let p = panorama_from_plan(OCEAN, &[], &opts).unwrap();
                 // One stem for the file, the Chunky scene `name`, its caches and
                 // the rendered PNG.
                 assert_eq!(
@@ -865,15 +970,15 @@ mod tests {
 
     #[test]
     fn emission_is_byte_deterministic() {
-        let a = panorama_from_plan(OCEAN, &PanoramaOptions::default()).unwrap();
-        let b = panorama_from_plan(OCEAN, &PanoramaOptions::default()).unwrap();
+        let a = panorama_from_plan(OCEAN, &[], &PanoramaOptions::default()).unwrap();
+        let b = panorama_from_plan(OCEAN, &[], &PanoramaOptions::default()).unwrap();
         assert_eq!(a, b);
         assert!(a.bytes.ends_with(b"\n"));
     }
 
     #[test]
     fn malformed_plan_json_is_dw0721() {
-        let err = panorama_from_plan(b"not json", &PanoramaOptions::default()).unwrap_err();
+        let err = panorama_from_plan(b"not json", &[], &PanoramaOptions::default()).unwrap_err();
         assert_eq!(err.code, DW_INPUT, "expected DW0721: {err:?}");
     }
 }
