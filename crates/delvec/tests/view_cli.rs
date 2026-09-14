@@ -345,3 +345,192 @@ fn panorama_purges_stale_chunky_caches() {
     assert!(!out.join("mini_panorama_se_45.octree2").exists());
     assert!(!out.join("mini_panorama_se_45.dump").exists());
 }
+
+/// A campaign directory holding only what `delvec cameras` reads: `design.json`
+/// rows and a `design/cameras.json` record.
+fn camera_campaign(dir: &Path, cameras: serde_json::Value) {
+    std::fs::create_dir_all(dir.join("design")).unwrap();
+    std::fs::write(
+        dir.join("design.json"),
+        br#"{"campaign_id":"mini","content":{"references":[
+            {"name":"concept/gate","shows":"the gate","time":"dusk","weather":"clear"},
+            {"name":"concept/hall","shows":"the hall","time":"dusk","weather":"clear"}]},
+            "dsl_version":"0.25.0","stage":"design"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("design/cameras.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({"campaign_id": "mini", "cameras": cameras}))
+            .unwrap(),
+    )
+    .unwrap();
+}
+
+fn a_camera(name: &str, answers: &str) -> serde_json::Value {
+    serde_json::json!({
+        "answers": answers, "exposure": 2.0, "fov": 55.0, "height": 450, "name": name,
+        "pitch": 12.0, "pos": [9.5, 72.0, -6.0], "spp": 64, "width": 800, "yaw": 20.0
+    })
+}
+
+/// `delvec cameras` emits one scene per stated camera, verbatim, names the
+/// approved images no camera answers, and with `--bracket` writes every
+/// candidate back out in the record format.
+#[test]
+fn cameras_emits_the_stated_cameras_and_their_candidates() {
+    let build_dir = tmp("cameras-ok");
+    std::fs::write(build_dir.join("render-plan.json"), render_plan_mini()).unwrap();
+    stub_world(&build_dir.join("world"));
+    let campaign = build_dir.join("campaign");
+    camera_campaign(
+        &campaign,
+        serde_json::json!([a_camera("gate", "concept/gate")]),
+    );
+    let out = build_dir.join("scenes");
+
+    let result = Command::new(BIN)
+        .args(["cameras"])
+        .arg(&build_dir)
+        .arg("--campaign")
+        .arg(&campaign)
+        .arg("-o")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let v = scene_json(&out.join("mini_camera_gate.json"));
+    assert_eq!(v["name"], "mini_camera_gate");
+    assert_eq!(v["width"], 800);
+    assert_eq!(v["sppTarget"], 64);
+    assert_eq!(v["exposure"], 2.0);
+    assert_eq!(v["camera"]["fov"], 55.0);
+    assert_eq!(v["camera"]["position"]["z"], -6.0);
+    assert!(v["sun"]["altitude"].is_number(), "{v}");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("1 of 2 approved image(s)") && stderr.contains("concept/hall"),
+        "{stderr}"
+    );
+
+    let bracketed = build_dir.join("bracketed");
+    let result = Command::new(BIN)
+        .args(["cameras"])
+        .arg(&build_dir)
+        .arg("--campaign")
+        .arg(&campaign)
+        .arg("-o")
+        .arg(&bracketed)
+        .args(["--bracket", "yaw=10,truck=2", "--draft"])
+        .output()
+        .unwrap();
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let candidates = scene_json(&bracketed.join("candidates.json"));
+    let names: Vec<&str> = candidates["cameras"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "gate",
+            "gate.yaw+10",
+            "gate.truck+2",
+            "gate.yaw-10",
+            "gate.truck-2"
+        ]
+    );
+    for n in &names {
+        let draft = scene_json(&bracketed.join(format!("mini_camera_{n}_draft.json")));
+        assert_eq!(draft["width"], 200, "{n}");
+    }
+}
+
+/// A camera answering no approved image, or a record that is not the record, is
+/// refused before anything is written.
+#[test]
+fn cameras_refuses_a_camera_that_answers_nothing() {
+    let build_dir = tmp("cameras-refused");
+    std::fs::write(build_dir.join("render-plan.json"), render_plan_mini()).unwrap();
+    stub_world(&build_dir.join("world"));
+    for (tag, cameras) in [
+        (
+            "stray",
+            serde_json::json!([a_camera("gate", "concept/cellar")]),
+        ),
+        ("none", serde_json::json!([])),
+        (
+            "bad-name",
+            serde_json::json!([a_camera("Gate", "concept/gate")]),
+        ),
+    ] {
+        let campaign = build_dir.join(tag);
+        camera_campaign(&campaign, cameras);
+        let out = build_dir.join(format!("out-{tag}"));
+        let result = Command::new(BIN)
+            .args(["cameras"])
+            .arg(&build_dir)
+            .arg("--campaign")
+            .arg(&campaign)
+            .arg("-o")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2), "{tag}: {result:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("DW0721"),
+            "{tag}: {result:?}"
+        );
+        assert!(
+            !out.exists(),
+            "{tag}: a refused record wrote {}",
+            out.display()
+        );
+    }
+}
+
+/// A panorama fitted to the building its anchors stand in is framed on their
+/// span, not on the whole layout, and says so in its name.
+#[test]
+fn panorama_frames_the_building_its_anchors_name() {
+    let build_dir = tmp("panorama-anchors");
+    std::fs::write(build_dir.join("render-plan.json"), render_plan_mini()).unwrap();
+    stub_world(&build_dir.join("world"));
+    std::fs::create_dir_all(build_dir.join("creator-datapack")).unwrap();
+    std::fs::write(
+        build_dir.join("creator-datapack/layout.json"),
+        br#"{"anchors":[{"id":"anchor/a","area":"area/entry","kind":"point","pos":[2,65,2]},
+                        {"id":"anchor/b","area":"area/entry","kind":"point","pos":[6,65,5]}]}"#,
+    )
+    .unwrap();
+    let out = build_dir.join("scenes");
+    let run = |subject: &str| {
+        Command::new(BIN)
+            .args(["panorama"])
+            .arg(&build_dir)
+            .arg("-o")
+            .arg(&out)
+            .args(["--subject", subject])
+            .output()
+            .unwrap()
+    };
+    let result = run("anchor/a,anchor/b");
+    assert_eq!(result.status.code(), Some(0), "{result:?}");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("[2, 64, 2]..[6, 69, 5]"), "{stderr}");
+    assert!(stderr.contains("camera record"), "{stderr}");
+    assert!(out.join("mini_panorama_se_45_anchors.json").exists());
+    let layout = run("layout");
+    assert_eq!(layout.status.code(), Some(0), "{layout:?}");
+    let narrow = scene_json(&out.join("mini_panorama_se_45_anchors.json"));
+    let wide = scene_json(&out.join("mini_panorama_se_45.json"));
+    // A smaller subject from the same side is a closer camera.
+    assert!(
+        narrow["camera"]["position"]["y"].as_f64().unwrap()
+            < wide["camera"]["position"]["y"].as_f64().unwrap(),
+        "{narrow} vs {wide}"
+    );
+    let refused = run("anchor/nowhere");
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+}

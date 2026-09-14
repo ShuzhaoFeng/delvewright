@@ -59,7 +59,7 @@
 //! # Candidates
 //!
 //! An estimate is a start, not a frame. `--bracket yaw=8,pitch=4,fov=10,dolly=6,
-//! rise=3` emits, beside each camera, the camera moved each way by each step, and
+//! truck=3,rise=3` emits, beside each camera, the camera moved each way by each step, and
 //! writes every candidate into `candidates.json` in the same record format — so the
 //! one a creator picks, by looking at it beside the approved image, is copied into
 //! `design/cameras.json` verbatim. `--draft` renders any of them small and cheap.
@@ -302,12 +302,14 @@ pub struct Bracket {
     pub fov: f64,
     /// Blocks along the horizontal heading, forward and back.
     pub dolly: f64,
+    /// Blocks sideways, to the camera's right and left.
+    pub truck: f64,
     /// Blocks up and down.
     pub rise: f64,
 }
 
 impl Bracket {
-    /// Parse `yaw=8,pitch=4,fov=10,dolly=6,rise=3`; every key optional, every step
+    /// Parse `yaw=8,pitch=4,fov=10,dolly=6,truck=3,rise=3`; every key optional, every step
     /// a positive number, at least one given.
     pub fn parse(spec: &str) -> Result<Bracket, String> {
         let mut b = Bracket::default();
@@ -327,10 +329,11 @@ impl Bracket {
                 "pitch" => &mut b.pitch,
                 "fov" => &mut b.fov,
                 "dolly" => &mut b.dolly,
+                "truck" => &mut b.truck,
                 "rise" => &mut b.rise,
                 other => {
                     return Err(format!(
-                        "`{other}` is not a bracket key: yaw, pitch, fov, dolly, rise"
+                        "`{other}` is not a bracket key: yaw, pitch, fov, dolly, truck, rise"
                     ));
                 }
             };
@@ -338,7 +341,9 @@ impl Bracket {
             any = true;
         }
         if !any {
-            return Err("a bracket names at least one of yaw, pitch, fov, dolly, rise".to_string());
+            return Err(
+                "a bracket names at least one of yaw, pitch, fov, dolly, truck, rise".to_string(),
+            );
         }
         Ok(b)
     }
@@ -383,6 +388,12 @@ impl Bracket {
             push("dolly", self.dolly, &|c| {
                 c.pos[0] = round6(c.pos[0] + sign * self.dolly * dx);
                 c.pos[2] = round6(c.pos[2] + sign * self.dolly * dz);
+            });
+            // The camera's right is the heading turned a quarter toward east
+            // from south: (-dz, dx).
+            push("truck", self.truck, &|c| {
+                c.pos[0] = round6(c.pos[0] - sign * self.truck * dz);
+                c.pos[2] = round6(c.pos[2] + sign * self.truck * dx);
             });
             push("rise", self.rise, &|c| {
                 c.pos[1] = round6(c.pos[1] + sign * self.rise)
@@ -868,11 +879,11 @@ mod tests {
     /// in the candidate's name; the stated camera leads.
     #[test]
     fn a_bracket_moves_one_thing_per_candidate() {
-        let b = Bracket::parse("yaw=8,pitch=4,fov=10,dolly=6,rise=3").unwrap();
+        let b = Bracket::parse("yaw=8,pitch=4,fov=10,dolly=6,truck=2,rise=3").unwrap();
         let c = cam("hero");
         let set = b.candidates(&c);
         assert_eq!(set[0], c);
-        assert_eq!(set.len(), 11);
+        assert_eq!(set.len(), 13);
         let named = |n: &str| set.iter().find(|x| x.name == n).unwrap().clone();
         assert_eq!(named("hero.yaw+8").yaw, 38.0);
         assert_eq!(named("hero.yaw-8").yaw, 22.0);
@@ -885,7 +896,23 @@ mod tests {
         assert!((dx - -6.0 * 30f64.to_radians().sin()).abs() < 1e-5, "{dx}");
         assert!((dz - 6.0 * 30f64.to_radians().cos()).abs() < 1e-5, "{dz}");
         assert_eq!(fwd.pos[1], c.pos[1]);
-        // Every candidate differs from the stated camera in exactly one field.
+        // Truck moves square to the heading, to the right on `+`: the camera's
+        // right is the snapshot rasteriser's `right` negated, i.e. the direction
+        // a frame's right edge lies in. Heading (dx, dz) turned to (-dz, dx).
+        let side = named("hero.truck+2");
+        let (sx, sz) = (side.pos[0] - c.pos[0], side.pos[2] - c.pos[2]);
+        assert!(
+            (sx * dx + sz * dz).abs() < 1e-5,
+            "truck is square to the heading"
+        );
+        assert!((sx.hypot(sz) - 2.0).abs() < 1e-5);
+        // Minecraft's own right for yaw 30: facing south-south-west, right is
+        // west-north-west, (-cos yaw, -sin yaw).
+        let y = 30f64.to_radians();
+        assert!(
+            (sx - -2.0 * y.cos()).abs() < 1e-5 && (sz - -2.0 * y.sin()).abs() < 1e-5,
+            "{sx},{sz}"
+        ); // Every candidate differs from the stated camera in exactly one field.
         for x in &set[1..] {
             let changed = [
                 x.yaw != c.yaw,
