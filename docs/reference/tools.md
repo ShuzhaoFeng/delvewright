@@ -719,6 +719,15 @@ nowhere in them to stand. `DW0895` reports the roofed floor no
 body can walk to, the pockets it forms and the step the walk was refused at. Both
 are asked before the client jar is opened.
 
+**Every eye-level frame an arm shows is measured for blindness** (`DW0893`,
+`compiler::view::sight`): 32×32 rays through the frame, counting first hits that
+are a face turned toward the camera within 4.5 blocks (vanilla's
+`block_interaction_range`). More than half is **blind** — a surface at arm's
+length, not a room — and is reported, never refused, naming the room camera to
+open instead. The count is printed on every run as a `sight:` line with its
+zeroes: `render piece`/`batch` over the `eye-*`, `room-*` and standing-view shots
+they render, `viewer` over every anchor's `pov:` and `room:` preset.
+
 Exit codes and the dark-shot review policy: [`compiler.md` §5](compiler.md).
 
 ### `piece` / `batch` — the per-prefab set · agent runs it, human reads it
@@ -763,6 +772,24 @@ floor, and how many open cells lie ahead before the view is stopped (and by
 what). A camera that stepped back is invisible in its own frame, so it is written
 down rather than implied.
 
+**Room** (`room-<anchor>`) is the picture of the room the anchor stands in. It
+keeps the anchor's facing and field of view and stands the body **back along the
+facing** to the far side of the space: one column at a time behind the anchor,
+while a body can stand there (one course of step), the anchor's eye stays in
+sight, and the column is under the anchor's cover — a stretch under the other
+cover is crossed only when the walk comes back out of it and it is shorter than
+the anchor's own cover already crossed (a louvre over a hearth, not a gatehouse
+passage). An eye shot answers *what does a body on the anchor see*; a guide who
+faces a hall's door from its dais is a correct anchor and an eye shot of a door,
+and the room shot of the same anchor is the hall from its screens end. The
+manifest's `room` block records the start and standing cells, `blocks_back` and
+why it `stopped` (`floor-ends`, `cover-changes`, `eye-cell-occupied`,
+`anchor-out-of-sight`). A door on the axis into a room under the same cover is
+not a boundary the walk sees; the standing cell says when that happened. Every
+`eye`, `room` and standing view carries a `sight` block (`rays`,
+`near_surface_rays`, `near_surface_percent`, `blind`), and the manifest's
+top-level `sight` block states the binding.
+
 **Views** (`--view`, repeatable) are cameras you aim, appended to the planned set
 under a name you choose. A view is a **bearing** plus a **subject box**:
 
@@ -782,6 +809,15 @@ delvec render piece out/notre-dame.json -o shots/ \
 | `fov=` | degrees, default 45 (the orbit lens, so a view is comparable with `ext-*`) |
 | `zoom=` | 1 frames the whole framed box; >1 closer, <1 further back |
 | `cutaway=` | `true` strips the top Y layer, as `top` and `anchor-*` do |
+| `stand=` | a declared anchor's full name: the camera is a **body** standing back in that anchor's space, as the `room-*` shot does, instead of an orbit camera |
+| `look=` | `north\|south\|east\|west`, with `stand=` only: the direction the body looks; default the anchor's facing |
+
+A **standing view** photographs a room along a direction its anchor does not
+face, without restating the anchor: `--view stand=anchor/stop-kitchen,look=north`
+stands at the south end of the kitchen and looks at its north wall. It takes
+`name=` (default `stand-<anchor>[-<look>]`), `look=`, `pitch=` and `fov=` (default
+70, the eye lens); every orbit key on it is refused (`DW0721`), and so is an
+anchor with no position, no facing and no `look=`, or with nowhere to stand.
 
 A `face=` view frames **that face**, not the whole box, which is what makes it a
 usable elevation of a deep building: the west front of a 31×64×93 cathedral fills
@@ -955,7 +991,10 @@ step of the same job.
 anchor and jigsaw socket adds a **point of view** — eye at **1.62 blocks** above
 the floor of that cell, the height a standing player actually sees from. A
 socket's facing points *out* of the piece, so its point of view looks the other
-way. The page opens on the first anchor whose name stem is a reserved way in
+way. An anchor with a horizontal facing also gets a **room** button: the same facing,
+stood back to the far side of the space it stands in, where `render piece` stands
+its `room-<anchor>` shot; a point of view that is blind (`DW0893`) is marked
+`· blind` in the list. The page opens on the first anchor whose name stem is a reserved way in
 (`spawn`, `entry`, `entrance`, `threshold`), else the first socket, skipping any
 whose eye would land inside a block; a prefab that declares none stands the
 reviewer on the ground off the south face, still walkable from the first frame.
