@@ -8,6 +8,7 @@ play commands. No puzzle solutions, no quest structure, no endings. Images are
 relative links into `media/`, small JPEGs, exterior or starting-scene shots
 only, picked from the visual-review set — never interiors or late-game
 locations. A localized `README.<code>.md` per declared language.
+An interior picture asked for elsewhere is a room camera: the `room-<anchor>` shot of `delvec --prefabs "$DELVEWRIGHT_PREFABS" render piece "$DELVEWRIGHT_PREFABS/<piece>.json" -o <dir>` (or `--view stand=anchor/<name>,look=<direction>`), never a frame its `DW0893` line reports blind.
 
 Storybook art is Chunky — the install from step 12 — in two passes. Draft with
 `delvec snapshot` — fast, disposable, for judging *layout*: is the right thing in

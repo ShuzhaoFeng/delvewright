@@ -247,6 +247,18 @@ from somewhere else: `delvec --prefabs "$DELVEWRIGHT_PREFABS" prefab lighting
 measured `dark` renders. Read the `DW0895` line the same run prints: how much of
 that piece's roofed floor no body can walk to.
 
+**A room is judged from its `room-<anchor>` shot, not its `eye-<anchor>` shot.**
+The eye shot stands on the anchor and looks along its facing, so it shows what
+a body there faces — a guide on a dais facing the lord's door is a picture of a
+door. The room shot keeps that facing and stands back to the far side of the
+space the anchor is in: name the approved image each room shot answers to, as
+for the POV frames. `DW0893` marks any eye-level frame that is mostly a surface
+within arm's reach and names the room shot to open instead; the run's `sight:`
+line counts them. When the approved image looks along a direction no anchor
+faces, ask for it rather than moving an anchor: `--view
+stand=anchor/<name>,look=<north|south|east|west>` appended to the `render piece`
+line stands the same body looking that way.
+
 Open the exterior/top/interior/anchor PNGs and check each against its `expect`
 line: marker visible? room not dark? NPC facing the camera with its name as text
 rather than JSON? seam clean? **Findings are document-level** — fix the campaign
