@@ -25,6 +25,9 @@
 //!   look at it: somebody measured its light (`DW0894`), and how much of its
 //!   roofed floor no body can reach (`DW0895`). Bound at every arm that puts a
 //!   piece in front of an eye.
+//! - [`sight`] — whether an eye-level frame shows a room or a surface at arm's
+//!   length (`DW0893`), and where a body stands back along an anchor's facing so
+//!   the frame shows the room it stands in.
 //!
 //! and the pieces those rest on: [`assets`] (lazy read access to the client jar /
 //! resource pack), [`cache`] (Chunky's derived per-scene caches and their
@@ -57,5 +60,6 @@ pub mod panorama;
 pub mod scene;
 pub mod sheet;
 pub mod showing;
+pub mod sight;
 pub mod tileset;
 pub mod viewer;
