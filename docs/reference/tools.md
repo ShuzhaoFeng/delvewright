@@ -1251,15 +1251,19 @@ position and the rotation: `pos` is that position with 1.62 added to Y, `yaw`
 and `pitch` are copied, `fov` is the client's FOV setting. A page such as
 `viewer` emits the same object from its camera.
 
-Finding a camera, cheapest first —
-[`showcase-shots.md`](showcase-shots.md) is the craft it applies:
+Finding a camera, cheapest first ([`showcase-shots.md`](showcase-shots.md) is the craft
+it applies):
 
 - **`--preview`** writes no scene: it assembles the world from `--campaign` and
   `--prefabs` and draws each camera with the `snapshot` rasteriser, flat-lit, at
   half its frame, as `<stem>_preview.png` — seconds for a whole record. The
   preview of a record camera is byte-identical to `snapshot --camera` with the
   same numbers (`crates/delvec/tests/snapshot.rs`). It is for placing: is the
-  camera in the room, is the point of interest in frame.
+  camera in the room, is the point of interest in frame. It also names every
+  camera whose lens is inside a block or within 0.25 block of one — a pinhole
+  camera has no near plane, so such a frame shows the block's inside faces or a
+  sliver of it across a corner — and prints `lens: N of M camera(s) clear`. A
+  flag, not a refusal: the query counts a torch or a carpet as a full cube.
 - **`--bracket yaw=8,pitch=4,fov=10,dolly=6,truck=3,rise=3`** (any subset) emits,
   after each camera, the camera moved one thing by one step each way — `dolly`
   along the heading, `truck` to the frame's right, `rise` up — named

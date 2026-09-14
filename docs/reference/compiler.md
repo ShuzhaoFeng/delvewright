@@ -6967,7 +6967,9 @@ to `candidates.json` in the record format. `--draft` divides the frame by 4 and
 caps samples at 128 under `<stem>_draft`. `--preview` writes no scene: it
 assembles the world as `snapshot` does (it reads `--prefabs`) and rasterises each
 camera at half its frame as `<stem>_preview.png`, byte-identical to `snapshot
---camera` with the same numbers. Byte-deterministic (ADR-0006): the same record,
+--camera` with the same numbers, and names each camera whose lens is inside or
+within `LENS_CLEARANCE` (0.25 block) of a placed block, with a `lens:` binding
+line — a report, since the grid counts every block as a full cube. Byte-deterministic (ADR-0006): the same record,
 plan and options give the same scene, candidate and preview bytes.
 
 ### `delvec edit apply` / `delvec edit preview` (spec-0017)

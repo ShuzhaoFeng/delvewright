@@ -1346,7 +1346,20 @@ fn run_cameras_preview(
         eprintln!("internal error: mkdir {}: {e}", out.display());
         return ExitCode::from(EXIT_INTERNAL);
     }
+    let mut obstructed = 0usize;
     for cam in &cameras {
+        if let Some(cell) = camera::lens_obstruction(cam.pos, |c| grid.solid(c)) {
+            obstructed += 1;
+            eprintln!(
+                "camera `{}`: the lens at {:?} is inside or within {} block of `{}` at {cell:?}. A \
+                 pinhole camera has no near plane, so the frame shows that block's inside faces or a \
+                 sliver of it across a corner: move the camera",
+                cam.name,
+                cam.pos,
+                camera::LENS_CLEARANCE,
+                grid.name(grid.at(cell))
+            );
+        }
         let frame = snapshot::render_frame(
             &grid,
             &snapshot::Camera {
@@ -1388,6 +1401,12 @@ fn run_cameras_preview(
          light is judged in the Chunky scene `delvec cameras` emits without --preview)",
         cameras.len(),
         out.display()
+    );
+    eprintln!(
+        "lens: {} of {} camera(s) clear of every block by {} block, {obstructed} flagged",
+        cameras.len() - obstructed,
+        cameras.len(),
+        camera::LENS_CLEARANCE
     );
     ExitCode::SUCCESS
 }

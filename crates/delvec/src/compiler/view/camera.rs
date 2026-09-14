@@ -548,6 +548,44 @@ pub struct EmitOptions {
     pub draft: bool,
 }
 
+/// How close, in blocks, a block may come to the lens before a frame is flagged.
+/// A pinhole camera has no near plane, so a lens inside a block, or grazing one,
+/// draws that block's inside faces or a sliver of it across a corner of the frame.
+pub const LENS_CLEARANCE: f64 = 0.25;
+
+/// The first occupied cell (in `x`, `y`, `z` order) that holds the lens or comes
+/// within [`LENS_CLEARANCE`] of it, by `occupied` — `None` when the lens stands
+/// clear. The query counts every placed block as a full cube, so a torch or a
+/// carpet beside the lens is flagged too: that can only call a frame suspect.
+pub fn lens_obstruction(pos: [f64; 3], occupied: impl Fn([i32; 3]) -> bool) -> Option<[i32; 3]> {
+    let base = [
+        pos[0].floor() as i32,
+        pos[1].floor() as i32,
+        pos[2].floor() as i32,
+    ];
+    for dx in -1..=1 {
+        for dy in -1..=1 {
+            for dz in -1..=1 {
+                let cell = [base[0] + dx, base[1] + dy, base[2] + dz];
+                if !occupied(cell) {
+                    continue;
+                }
+                let gap2: f64 = (0..3)
+                    .map(|a| {
+                        let (lo, hi) = (f64::from(cell[a]), f64::from(cell[a]) + 1.0);
+                        let d = (lo - pos[a]).max(pos[a] - hi).max(0.0);
+                        d * d
+                    })
+                    .sum();
+                if gap2 <= LENS_CLEARANCE * LENS_CLEARANCE {
+                    return Some(cell);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The campaign a build's `render-plan.json` was written for.
 pub fn plan_campaign_id(plan_json: &[u8]) -> Result<String, Diagnostic> {
     Ok(scene::parse_plan(plan_json)?.campaign_id)
@@ -718,6 +756,27 @@ mod tests {
             }
         }
         assert_eq!(judged, 11 * 6);
+    }
+
+    #[test]
+    fn a_lens_inside_or_grazing_a_block_is_named() {
+        let wall = |c: [i32; 3]| c[0] == 5;
+        assert_eq!(
+            lens_obstruction([5.5, 70.5, 0.5], wall),
+            Some([5, 70, 0]),
+            "inside"
+        );
+        assert_eq!(
+            lens_obstruction([4.8, 70.5, 0.5], wall),
+            Some([5, 70, 0]),
+            "grazing"
+        );
+        assert_eq!(lens_obstruction([4.7, 70.5, 0.5], wall), None, "0.3 clear");
+        assert_eq!(lens_obstruction([2.5, 70.5, 0.5], wall), None);
+        // Edge and corner neighbours count by true distance, not by cell.
+        let corner = |c: [i32; 3]| c == [6, 71, 1];
+        assert_eq!(lens_obstruction([5.9, 70.9, 0.9], corner), Some([6, 71, 1]));
+        assert_eq!(lens_obstruction([5.7, 70.7, 0.7], corner), None);
     }
 
     #[test]
