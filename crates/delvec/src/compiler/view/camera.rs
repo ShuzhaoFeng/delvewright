@@ -773,7 +773,8 @@ mod tests {
             &EmitOptions::default(),
         )
         .unwrap();
-        let edits: [(&str, fn(&mut Camera)); 9] = [
+        type Edit = (&'static str, fn(&mut Camera));
+        let edits: [Edit; 9] = [
             ("exposure", |c| c.exposure *= 2.0),
             ("pos.x", |c| c.pos[0] += 1.0),
             ("pos.y", |c| c.pos[1] += 1.0),
@@ -864,7 +865,7 @@ mod tests {
         let design = br#"{"campaign_id":"c","content":{"references":[
             {"name":"concept/quay","shows":"x","time":"day","weather":"clear"},
             {"name":"concept/hall","shows":"y","time":"day","weather":"clear"}]},
-            "dsl_version":"0.25.0","stage":"design"}"#;
+            "stage":"design"}"#;
         let rows = reference_names(design).unwrap();
         let unanswered = bind_answers(&sheet("c", vec![cam("a")]), &rows).unwrap();
         assert_eq!(unanswered, vec!["concept/hall".to_string()]);

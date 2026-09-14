@@ -355,7 +355,7 @@ fn camera_campaign(dir: &Path, cameras: serde_json::Value) {
         br#"{"campaign_id":"mini","content":{"references":[
             {"name":"concept/gate","shows":"the gate","time":"dusk","weather":"clear"},
             {"name":"concept/hall","shows":"the hall","time":"dusk","weather":"clear"}]},
-            "dsl_version":"0.25.0","stage":"design"}"#,
+            "stage":"design"}"#,
     )
     .unwrap();
     std::fs::write(

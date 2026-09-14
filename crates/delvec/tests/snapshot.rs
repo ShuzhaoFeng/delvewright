@@ -479,9 +479,12 @@ fn a_camera_preview_is_the_snapshot_of_the_same_camera() {
     .unwrap();
     std::fs::write(
         campaign.join("design.json"),
-        br#"{"campaign_id":"keep-vertical","content":{"references":[
-            {"name":"concept/keep","shows":"the keep","time":"noon","weather":"clear"}]},
-            "dsl_version":"0.25.0","stage":"design"}"#,
+        format!(
+            r#"{{"campaign_id":"keep-vertical","content":{{"references":[
+            {{"name":"concept/keep","shows":"the keep","time":"noon","weather":"clear"}}]}},
+            "dsl_version":"{}","stage":"design"}}"#,
+            delvewright_dsl::DSL_VERSION
+        ),
     )
     .unwrap();
     let camera = serde_json::json!({
