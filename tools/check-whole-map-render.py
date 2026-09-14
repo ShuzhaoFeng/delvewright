@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The whole-map illustration path runs, on every horizon the engine can build.
+"""The storybook illustration path runs, on every horizon the engine can build.
 
 ## The gap this closes
 
@@ -40,12 +40,25 @@ Per point, for each of `scene` and `panorama`:
 - the command exits 0, and its stderr is reported verbatim when it does not;
 - it emits at least one scene file;
 - **the frame contains the ground.** A scene's `chunkList` must cover the
-  landform the horizon declares, not merely the layout. The panorama camera and
-  the chunk list are both solved from the layout AABB, which is the union of the
-  placed AREAS — so on a horizon that BUILDS terrain the whole-map illustration
-  framed a box inside a landform several times its size and loaded none of it.
-  That defect renders successfully and produces a picture, which is why it needs
-  an assertion rather than an eye.
+  landform the horizon declares, not merely the layout. The layout AABB is the
+  union of the placed AREAS, so on a horizon that BUILDS terrain a chunk list
+  solved from it alone loads none of the landform the place stands in. That
+  defect renders successfully and produces a picture, which is why it needs an
+  assertion rather than an eye.
+- **the panorama frames the built place, and fills the frame with it.** Read
+  the way Chunky reads the scene — `camera.orientation` in Chunky's basis,
+  `fov` as the VERTICAL field of view, the horizontal half-extent scaled by
+  `width / height` — every corner of the plan's `layout_aabb` must project
+  inside the frame, and the rectangle they span must cover at least a third of
+  it. Framing the union of the layout and the landform instead is the defect this
+  catches: on a valley it put the castle a fifth of the frame wide and filled the
+  rest with slopes and the void past them. The projection here is a second
+  implementation, sharing no code with the engine's solve.
+
+The arms refuse a build with no world save (Chunky renders a missing world as an
+empty frame at exit 0). This gate judges scene bytes and renders nothing, so each
+build gets a stub save — `level.dat` and one region file — which is exactly the
+shape the arms check for and nothing Chunky could load.
 
 ## Binding count
 
@@ -59,6 +72,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -149,6 +163,63 @@ def covers(chunks: list[list[int]], lo: list[int], hi: list[int]) -> list[str]:
     return missing
 
 
+def stub_world(build: Path) -> None:
+    """The shape of a world save the arms accept; see the module docs."""
+    region = build / "world" / "region"
+    region.mkdir(parents=True, exist_ok=True)
+    (build / "world" / "level.dat").write_bytes(b"stub")
+    (region / "r.0.0.mca").write_bytes(b"stub")
+
+
+# The share of the frame a panorama's subject must cover. A third is what the
+# island's accepted release art measures: its built place's bounding rectangle
+# over its frame.
+MIN_FILL = 1.0 / 3.0
+
+
+def subject_in_frame(doc: dict, lo: list[int], hi: list[int]) -> tuple[bool, float, float]:
+    """Project the layout box through the scene's own camera, as Chunky does.
+
+    Chunky stores `yaw`/`pitch` radians whose world view direction is
+    `(cos yaw·sin pitch, -cos pitch, -sin yaw·sin pitch)`; a pixel's ray is
+    `forward + x·right + y·up` with `y` in `[-tan(fov/2), tan(fov/2)]` and `x`
+    scaled by `width / height`. Returns (every corner inside, width share,
+    height share) of the corners' bounding rectangle, clipped to the frame.
+    """
+    cam = doc["camera"]
+    yaw, pitch = cam["orientation"]["yaw"], cam["orientation"]["pitch"]
+    f = (math.cos(yaw) * math.sin(pitch), -math.cos(pitch), -math.sin(yaw) * math.sin(pitch))
+    n = math.hypot(f[0], f[2])
+    right = (-f[2] / n, 0.0, f[0] / n)
+    up = (
+        right[1] * f[2] - right[2] * f[1],
+        right[2] * f[0] - right[0] * f[2],
+        right[0] * f[1] - right[1] * f[0],
+    )
+    pos = (cam["position"]["x"], cam["position"]["y"], cam["position"]["z"])
+    tan_v = math.tan(math.radians(cam["fov"]) / 2)
+    tan_h = tan_v * doc["width"] / doc["height"]
+    xs, ys, inside = [], [], True
+    for i in range(8):
+        corner = (
+            (lo[0], hi[0] + 1)[i & 1],
+            (lo[1], hi[1] + 1)[(i >> 1) & 1],
+            (lo[2], hi[2] + 1)[(i >> 2) & 1],
+        )
+        rel = [corner[k] - pos[k] for k in range(3)]
+        depth = sum(rel[k] * f[k] for k in range(3))
+        if depth <= 0:
+            return False, 0.0, 0.0
+        x = sum(rel[k] * right[k] for k in range(3)) / depth
+        y = sum(rel[k] * up[k] for k in range(3)) / depth
+        inside &= abs(x) <= tan_h and abs(y) <= tan_v
+        xs.append(x)
+        ys.append(y)
+    w = (min(max(xs), tan_h) - max(min(xs), -tan_h)) / (2 * tan_h)
+    h = (min(max(ys), tan_v) - max(min(ys), -tan_v)) / (2 * tan_v)
+    return inside, max(w, 0.0), max(h, 0.0)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--delvec", help="the `delvec` this tool runs. Default: `target/release/delvec` then `target/debug/delvec` in this tree — resolved, NAMED on stderr, and refused when it is older than the compiler sources it was built from (`tools/lib/delvec_bin.py`).")
@@ -176,6 +247,7 @@ def main() -> int:
 
     findings: list[str] = []
     scenes_judged = 0
+    panoramas_framed = 0
     builds = 0
 
     for base in bases:
@@ -191,6 +263,7 @@ def main() -> int:
             )
             continue
         builds += 1
+        stub_world(out)
         plan = json.loads((out / "render-plan.json").read_text())
         h = plan.get("horizon")
         kind = h.get("kind") if h else "void"
@@ -228,6 +301,19 @@ def main() -> int:
                 if not chunks:
                     findings.append(f"{base} ({label}) {f.name}: empty chunkList")
                     continue
+                if arm == "panorama":
+                    panoramas_framed += 1
+                    box = plan["layout_aabb"]
+                    inside, w, h = subject_in_frame(doc, box["min"], box["max"])
+                    if not inside or w * h < MIN_FILL:
+                        findings.append(
+                            f"{base} ({label}) {f.name}: the placed areas "
+                            f"{box['min']}..{box['max']} are "
+                            f"{'inside' if inside else 'NOT inside'} the frame and "
+                            f"cover {w * h:.2f} of it ({w:.2f} x {h:.2f}); the floor "
+                            f"is {MIN_FILL:.2f}. A panorama frames the built place, "
+                            "not the ground around it."
+                        )
                 if extent:
                     gap = covers(chunks, extent["min"], extent["max"])
                     if gap:
@@ -242,8 +328,14 @@ def main() -> int:
     print(
         f"whole-map render: {len(bases)} horizon base(s) declared "
         f"({', '.join(bases)}), {len(found)} point(s) found, {builds} build(s) "
-        f"exercised, {scenes_judged} scene file(s) judged, {len(findings)} finding(s)."
+        f"exercised, {scenes_judged} scene file(s) judged, {panoramas_framed} of "
+        f"{builds} panorama(s) framed, {len(findings)} finding(s)."
     )
+    if builds and panoramas_framed != builds:
+        die(
+            f"{panoramas_framed} panorama frame(s) judged over {builds} build(s): "
+            "every build owes one, so the framing assertion did not bind to them all."
+        )
     if scenes_judged == 0:
         die(
             "ZERO scene files were judged, so every assertion above examined "

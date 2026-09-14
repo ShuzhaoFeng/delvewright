@@ -116,7 +116,7 @@ delve creator. Everything you run is a subcommand of it:
 |---|---|
 | `delvec` | `validate` · `analyze` · `build` · `fmt` — plus `schema`, which prints the exact shape of every campaign document |
 | `delvec viewer` | *what does this actually look like?* One self-contained web page you orbit, cut the roof off, and stand inside at eye height — every block drawn from the pinned version's own models |
-| `delvec panorama` · `scene` · `snapshot` | frames to look at: the whole-map hero shot, the player's-eye review shots, quick drafts |
+| `delvec panorama` · `scene` · `snapshot` | frames to look at: the storybook shot of the built place, the player's-eye review shots, quick drafts |
 | `delvec contact-sheet` | *several candidate rooms, one slot* — all of them on one page to choose from |
 | `delvec allocation` | *what box does this part get?* The extents, datum and seams a piece must answer |
 | `delvec grammar` | *the library has no piece for this* — writes a new one from a rule program |

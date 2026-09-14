@@ -12,11 +12,12 @@ locations. A localized `README.<code>.md` per declared language.
 Storybook art is Chunky — the install from step 12 — in two passes. Draft with
 `delvec snapshot` — fast, disposable, for judging *layout*: is the right thing in
 frame, from the right side, at the right distance. Then produce the shipped
-image with Chunky from
-`$DELVEWRIGHT_ENGINE/validation/render-shots.sh`'s scene set, plus `delvec --prefabs "$DELVEWRIGHT_PREFABS" panorama <build-dir> -o
-<dir>` for the whole-map hero shot every release owes (`--bearing` picks the
-corner). Never hand-edit a scene JSON: if the frame you want is not emittable,
-that is a `delvec render` gap to report, not a file to patch.
+image with Chunky from `render-shots.sh`'s scene set, which holds the exterior
+hero shot every release owes. From the side the declared hour's sun lights:
+`delvec --prefabs "$DELVEWRIGHT_PREFABS" panorama "$D" -o "$D/shots/scenes" --bearing ne --world "$D/world"`,
+`D` being step 12's absolute `$DELVEWRIGHT_ENGINE/validation/delve-output` — a world Chunky cannot
+find renders as an empty grey frame at exit 0. Never hand-edit a scene JSON: if the
+frame you want is not emittable, that is a `delvec render` gap to report.
 
 **Every edition opens with the engine-version marker**, on its own line directly
 under the title. This is the one piece of internal machinery a storybook carries
