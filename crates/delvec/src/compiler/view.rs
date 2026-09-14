@@ -14,7 +14,7 @@
 //!   a reviewer drives.
 //! - [`scene`] — Chunky scene emission from the compiler's `render-plan.json`
 //!   (the free-camera path behind the first-person player-POV shots).
-//! - [`panorama`] — the whole-map 45° oblique release panorama.
+//! - [`panorama`] — the oblique exterior of the built place, the storybook shot.
 //! - [`sheet`] — the contact sheet: many candidate renders on one page, ordered
 //!   by a similarity score that RANKS and never gates.
 //! - [`index`] — shot index: (image ↔ expect) pairs for the vision reviewer.

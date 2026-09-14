@@ -57,33 +57,52 @@ pub enum ViewCommand {
         /// Output directory for the scene JSONs.
         #[arg(short, long)]
         out: PathBuf,
-        /// Path Chunky should load the delve world from (documented; default `world`).
-        #[arg(long, default_value = "world")]
-        world: String,
+        /// The world save the scenes load (default `<build-dir>/world`, where
+        /// `validation/world-save.sh` writes it). Refused unless it holds
+        /// `level.dat` and a region file; written into the scenes as an absolute
+        /// path.
+        #[arg(long)]
+        world: Option<PathBuf>,
         /// Rendered frame dimension (square), in pixels.
         #[arg(long, default_value_t = DEFAULT_SIZE)]
         size: u32,
     },
-    /// Emit the whole-map 45° oblique panorama scene (the release illustration)
-    /// from a build output's `render-plan.json`.
+    /// Emit an oblique exterior scene of the delve's built place — the storybook
+    /// shot — from a build output's `render-plan.json`. The camera frames the
+    /// placed areas; the ground a horizon built around them is loaded, not framed.
     Panorama {
         /// A `delvec build` output directory (containing `render-plan.json`).
         build_dir: PathBuf,
         /// Output directory for the scene JSON.
         #[arg(short, long)]
         out: PathBuf,
-        /// Path Chunky should load the delve world from (documented; default `world`).
-        #[arg(long, default_value = "world")]
-        world: String,
-        /// Which corner of the layout the camera stands over.
+        /// The world save the scene loads (default `<build-dir>/world`, where
+        /// `validation/world-save.sh` writes it). Refused unless it holds
+        /// `level.dat` and a region file; written into the scene as an absolute
+        /// path.
+        #[arg(long)]
+        world: Option<PathBuf>,
+        /// Which side the camera stands on: a corner (se, sw, ne, nw) looks along
+        /// the diagonal, a face (n, e, s, w) looks square at that side.
         #[arg(long, value_enum, default_value_t = Bearing::Se)]
         bearing: Bearing,
+        /// Degrees the camera looks down: 45 is the oblique over the whole place,
+        /// lower shows its walls in elevation, higher approaches a plan.
+        #[arg(long, default_value_t = panorama::DEFAULT_PITCH_DEG,
+              value_parser = clap::value_parser!(u8).range(
+                  i64::from(*panorama::PITCH_RANGE.start())..=i64::from(*panorama::PITCH_RANGE.end())))]
+        pitch: u8,
         /// Path-tracing sample target: ~64 for a draft, ~300 for release art.
         #[arg(long, default_value_t = panorama::DEFAULT_SPP)]
         spp: u32,
-        /// Rendered frame dimension (square), in pixels.
-        #[arg(long, default_value_t = DEFAULT_SIZE)]
-        size: u32,
+        /// Frame width, in pixels.
+        #[arg(long, default_value_t = panorama::DEFAULT_WIDTH,
+              value_parser = clap::value_parser!(u32).range(1..))]
+        width: u32,
+        /// Frame height, in pixels.
+        #[arg(long, default_value_t = panorama::DEFAULT_HEIGHT,
+              value_parser = clap::value_parser!(u32).range(1..))]
+        height: u32,
     },
     /// Lay candidate renders out as ONE contact sheet for the owner to curate
     /// massing from (spec-0027 §3). With `--scores`, the similarity score
@@ -180,7 +199,7 @@ impl ViewCommand {
             } => run_scene(
                 build_dir,
                 out,
-                world,
+                world.as_deref(),
                 &ViewOpts {
                     json,
                     textures: None,
@@ -192,18 +211,22 @@ impl ViewCommand {
                 out,
                 world,
                 bearing,
+                pitch,
                 spp,
-                size,
+                width,
+                height,
             } => run_panorama(
                 build_dir,
                 out,
-                world,
-                *bearing,
-                *spp,
-                &ViewOpts {
-                    json,
-                    textures: None,
-                    size: *size,
+                world.as_deref(),
+                json,
+                PanoramaOptions {
+                    world_path: String::new(),
+                    width: *width,
+                    height: *height,
+                    spp_target: *spp,
+                    bearing: *bearing,
+                    pitch_deg: *pitch,
                 },
             ),
             ViewCommand::ContactSheet {
@@ -338,7 +361,7 @@ fn structure_palette(build_dir: &Path) -> Result<Vec<String>, Diagnostic> {
     Ok(palette.into_iter().collect())
 }
 
-fn run_scene(build_dir: &Path, out: &Path, world: &str, vopts: &ViewOpts) -> ExitCode {
+fn run_scene(build_dir: &Path, out: &Path, world: Option<&Path>, vopts: &ViewOpts) -> ExitCode {
     let plan_path = build_dir.join("render-plan.json");
     let bytes = match std::fs::read(&plan_path) {
         Ok(b) => b,
@@ -350,8 +373,12 @@ fn run_scene(build_dir: &Path, out: &Path, world: &str, vopts: &ViewOpts) -> Exi
             );
         }
     };
+    let world_path = match resolve_world(build_dir, world) {
+        Ok(w) => w,
+        Err(d) => return fail(d, vopts.json, exit::INPUT),
+    };
     let opts = SceneOptions {
-        world_path: world.to_string(),
+        world_path,
         width: vopts.size,
         height: vopts.size,
         spp_target: 500,
@@ -409,10 +436,9 @@ fn write_scenes(out: &Path, scenes: &[(String, Vec<u8>)]) -> Result<usize, (Diag
 fn run_panorama(
     build_dir: &Path,
     out: &Path,
-    world: &str,
-    bearing: Bearing,
-    spp: u32,
-    vopts: &ViewOpts,
+    world: Option<&Path>,
+    json: bool,
+    mut opts: PanoramaOptions,
 ) -> ExitCode {
     let plan_path = build_dir.join("render-plan.json");
     let bytes = match std::fs::read(&plan_path) {
@@ -420,36 +446,85 @@ fn run_panorama(
         Err(e) => {
             return fail(
                 Diagnostic::error(DW_INPUT, format!("read {}: {e}", plan_path.display())),
-                vopts.json,
+                json,
                 exit::INPUT,
             );
         }
     };
-    let opts = PanoramaOptions {
-        world_path: world.to_string(),
-        width: vopts.size,
-        height: vopts.size,
-        spp_target: spp,
-        bearing,
+    opts.world_path = match resolve_world(build_dir, world) {
+        Ok(w) => w,
+        Err(d) => return fail(d, json, exit::INPUT),
     };
-    let scene = match panorama::panorama_from_plan(&bytes, &opts) {
+    let pano = match panorama::panorama_from_plan(&bytes, &opts) {
         Ok(s) => s,
-        Err(d) => return fail(d, vopts.json, exit::INPUT),
+        Err(d) => return fail(d, json, exit::INPUT),
     };
-    let name = scene.0.clone();
+    let scene = (pano.file_name.clone(), pano.bytes.clone());
     let purged = match write_scenes(out, std::slice::from_ref(&scene)) {
         Ok(n) => n,
-        Err((d, code)) => return fail(d, vopts.json, code),
+        Err((d, code)) => return fail(d, json, code),
     };
+    let (smin, smax) = pano.subject;
     eprintln!(
-        "emitted panorama {} -> {} ({purged} stale cache file(s) purged; {} spp, render with {}; \
+        "emitted panorama {} -> {} ({purged} stale cache file(s) purged; {}x{}, {} spp, render with {}; \
          see README)",
-        name,
+        pano.file_name,
         out.display(),
-        spp,
+        opts.width,
+        opts.height,
+        opts.spp_target,
         scene::CHUNKY_CORE
     );
+    eprintln!(
+        "subject: the placed areas, box {smin:?}..{smax:?} — covers {:.0}% of the frame \
+         ({:.0}% of its width x {:.0}% of its height) from bearing {} at {} degrees",
+        pano.span.fill() * 100.0,
+        pano.span.width * 100.0,
+        pano.span.height * 100.0,
+        opts.bearing.name(),
+        opts.pitch_deg
+    );
     ExitCode::SUCCESS
+}
+
+/// The world save a scene names, as the absolute path Chunky will be handed.
+///
+/// Chunky resolves a scene's world path against the RENDERING process's working
+/// directory, and renders a world it cannot find as an empty frame at exit 0 with
+/// the reason inside a Java stack trace. `delvec build` writes no world — the
+/// datapack stamps the geometry during a server boot, and
+/// `validation/world-save.sh` copies that save to `<build-dir>/world`. So the
+/// default is that directory, the path is made absolute here, and a directory
+/// without `level.dat` and at least one region file is refused before a scene is
+/// written.
+fn resolve_world(build_dir: &Path, world: Option<&Path>) -> Result<String, Diagnostic> {
+    let dir = world.map_or_else(|| build_dir.join("world"), Path::to_path_buf);
+    let level = dir.join("level.dat").is_file();
+    let regions = std::fs::read_dir(dir.join("region"))
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .filter(|e| e.path().extension().is_some_and(|x| x == "mca"))
+                .count()
+        })
+        .unwrap_or(0);
+    if !level || regions == 0 {
+        return Err(Diagnostic::error(
+            DW_INPUT,
+            format!(
+                "{} holds no world save (level.dat: {}, region files: {regions}). A scene names \
+                 the world Chunky loads, `delvec build` writes none, and Chunky renders a \
+                 missing world as an empty frame at exit 0. Boot the build once to write it: \
+                 `EULA=TRUE \"$DELVEWRIGHT_ENGINE/validation/world-save.sh\" {} --project dw-<id>` \
+                 writes `<build-dir>/world`, the default; `--world` names a save elsewhere",
+                dir.display(),
+                if level { "present" } else { "MISSING" },
+                build_dir.display(),
+            ),
+        ));
+    }
+    let abs = std::path::absolute(&dir)
+        .map_err(|e| Diagnostic::error(DW_INPUT, format!("resolve {}: {e}", dir.display())))?;
+    Ok(abs.display().to_string())
 }
 
 fn run_index(build_dir: &Path, out: &Path, vopts: &ViewOpts) -> ExitCode {
