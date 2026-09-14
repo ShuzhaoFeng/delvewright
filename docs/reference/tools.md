@@ -1220,7 +1220,7 @@ there is no second way to say where a showcase camera is.
       "name": "great-hall",
       "pitch": 18.0,
       "pos": [37.5, 85.0, 33.0],
-      "spp": 768,
+      "spp": 4096,
       "width": 1600,
       "yaw": 300.0
     }
@@ -1236,7 +1236,7 @@ there is no second way to say where a showcase camera is.
 | `yaw`, `pitch` | Minecraft's own rotation, as the debug screen and `/tp x y z yaw pitch` speak it: yaw 0 south, 90 west, 180 north, 270 east, any value between; pitch positive looks down, −90..90 |
 | `fov` | vertical field of view, degrees (Chunky's `fov` and Minecraft's FOV setting are both vertical) |
 | `exposure` | the camera's exposure; it scales what reaches the lens and puts no light into the world. A torch-lit room is exposed for the room (doune: 8–16) |
-| `width`, `height`, `spp` | the frame and the sample target (doune: 1600×900; 300 in daylight, 768 in a torch-lit room) |
+| `width`, `height`, `spp` | the frame and the sample target (doune: 1600×900; 300 in daylight; a torch-lit room 4096 plus a BM3D pass, showcase only — [`showcase-shots.md`](showcase-shots.md) §3.8 has the measurement) |
 
 Everything else a frame needs comes from the build and is not restated: the
 declared hour's sun, the layout and its landform in the chunk list, the ocean
