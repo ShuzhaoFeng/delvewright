@@ -55,6 +55,20 @@ Per point, for each of `scene` and `panorama`:
   rest with slopes and the void past them. The projection here is a second
   implementation, sharing no code with the engine's solve.
 
+And for `delvec cameras`, on every point whose campaign carries a
+`design/cameras.json`:
+
+- **every stated camera is the scene's camera.** One scene per camera, named
+  `<campaign>_camera_<name>`, whose position, vertical `fov`, frame, exposure and
+  sample target are the record's, and whose view direction — derived from the
+  stored orientation in Chunky's basis — is the direction Minecraft looks for the
+  record's own yaw and pitch (`(-sin yaw·cos pitch, -sin pitch, cos yaw·cos
+  pitch)`), within 1e-5. That formula is written here from the game's convention,
+  sharing nothing with the engine's conversion, so a yaw read with the wrong sign
+  or the wrong zero is a red rather than a picture of the wrong wall.
+- the record binds: a campaign whose record states no camera, or a run that
+  judged zero cameras over the whole domain, is a red.
+
 The arms refuse a build with no world save (Chunky renders a missing world as an
 empty frame at exit 0). This gate judges scene bytes and renders nothing, so each
 build gets a stub save — `level.dat` and one region file — which is exactly the
@@ -171,6 +185,33 @@ def stub_world(build: Path) -> None:
     (region / "r.0.0.mca").write_bytes(b"stub")
 
 
+def camera_matches(doc: dict, cam: dict) -> list[str]:
+    """What differs between a stated camera and the scene emitted for it."""
+    bad = []
+    c = doc["camera"]
+    pos = (c["position"]["x"], c["position"]["y"], c["position"]["z"])
+    if any(abs(pos[k] - cam["pos"][k]) > 1e-5 for k in range(3)):
+        bad.append(f"position {pos} is not the record's {cam['pos']}")
+    for key, want in (("fov", cam["fov"]),):
+        if abs(c[key] - want) > 1e-5:
+            bad.append(f"{key} {c[key]} is not the record's {want}")
+    for key, field in (("width", "width"), ("height", "height"), ("sppTarget", "spp")):
+        if doc[key] != cam[field]:
+            bad.append(f"{key} {doc[key]} is not the record's {cam[field]}")
+    if abs(doc["exposure"] - cam["exposure"]) > 1e-5:
+        bad.append(f"exposure {doc['exposure']} is not the record's {cam['exposure']}")
+    yaw, pitch = c["orientation"]["yaw"], c["orientation"]["pitch"]
+    got = (math.cos(yaw) * math.sin(pitch), -math.cos(pitch), -math.sin(yaw) * math.sin(pitch))
+    y, p = math.radians(cam["yaw"]), math.radians(cam["pitch"])
+    want = (-math.sin(y) * math.cos(p), -math.sin(p), math.cos(y) * math.cos(p))
+    if any(abs(got[k] - want[k]) > 1e-5 for k in range(3)):
+        bad.append(
+            f"looks along {tuple(round(v, 4) for v in got)}, where Minecraft yaw "
+            f"{cam['yaw']} pitch {cam['pitch']} looks along {tuple(round(v, 4) for v in want)}"
+        )
+    return bad
+
+
 # The share of the frame a panorama's subject must cover. A third is what the
 # island's accepted release art measures: its built place's bounding rectangle
 # over its frame.
@@ -249,6 +290,8 @@ def main() -> int:
     scenes_judged = 0
     panoramas_framed = 0
     builds = 0
+    cameras_judged = 0
+    records = 0
 
     for base in bases:
         point = found[base]
@@ -273,6 +316,31 @@ def main() -> int:
                 "point does not exercise the base it was selected for"
             )
         extent = (h or {}).get("extent")
+
+        record = src / "design" / "cameras.json"
+        if record.is_file():
+            records += 1
+            sheet = json.loads(record.read_text())
+            dest = work / f"cameras-{label}"
+            r = run([str(delvec), "cameras", str(out), "--campaign", str(src), "-o", str(dest)])
+            if r.returncode != 0:
+                findings.append(
+                    f"{base} ({label}): `delvec cameras` exited {r.returncode} — "
+                    f"{(r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else 'no reason given'}"
+                )
+            elif not sheet.get("cameras"):
+                findings.append(f"{base} ({label}): {record} states no camera")
+            else:
+                for cam in sheet["cameras"]:
+                    scene_file = dest / f"{sheet['campaign_id']}_camera_{cam['name']}.json"
+                    if not scene_file.is_file():
+                        findings.append(
+                            f"{base} ({label}): camera `{cam['name']}` has no scene {scene_file.name}"
+                        )
+                        continue
+                    cameras_judged += 1
+                    for why in camera_matches(json.loads(scene_file.read_text()), cam):
+                        findings.append(f"{base} ({label}) camera `{cam['name']}`: {why}")
 
         for arm in ("scene", "panorama"):
             dest = work / f"{arm}-{label}"
@@ -329,8 +397,15 @@ def main() -> int:
         f"whole-map render: {len(bases)} horizon base(s) declared "
         f"({', '.join(bases)}), {len(found)} point(s) found, {builds} build(s) "
         f"exercised, {scenes_judged} scene file(s) judged, {panoramas_framed} of "
-        f"{builds} panorama(s) framed, {len(findings)} finding(s)."
+        f"{builds} panorama(s) framed, {cameras_judged} stated camera(s) judged over "
+        f"{records} camera record(s), {len(findings)} finding(s)."
     )
+    if builds and cameras_judged == 0:
+        die(
+            "ZERO stated cameras were judged: no point of the domain carries a "
+            "`design/cameras.json`, or none of its cameras reached a scene. The "
+            "showcase camera path is proven on the gallery's record or not at all."
+        )
     if builds and panoramas_framed != builds:
         die(
             f"{panoramas_framed} panorama frame(s) judged over {builds} build(s): "

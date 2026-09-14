@@ -258,6 +258,9 @@ line counts them. When the approved image looks along a direction no anchor
 faces, ask for it rather than moving an anchor: `--view
 stand=anchor/<name>,look=<north|south|east|west>` appended to the `render piece`
 line stands the same body looking that way.
+The room shot judges the piece from a body's place in it. A picture of a room
+for anyone else — the storybook, a front page — is a showcase camera placed
+wherever the picture is best, and step 14 is how it is found.
 
 Open the exterior/top/interior/anchor PNGs and check each against its `expect`
 line: marker visible? room not dark? NPC facing the camera with its name as text
