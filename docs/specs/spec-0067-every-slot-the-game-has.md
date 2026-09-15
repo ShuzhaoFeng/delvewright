@@ -527,10 +527,11 @@ is recorded as a debt.
     held with the ledger's other open capability rows until a carrier for the
     mounts' footprint exists.*
 17. **The record and the skill.** The rows and pages of §6, in the pull
-    request that lands the code. *Tree: met for the record; the skill page
-    carries the rows and names `DW0898`, which `tools/check-skill-page.py`
-    refuses while the page's engine pin is a release that does not declare the
-    code — a debt until the page re-pins to a release carrying it.*
+    request that lands the code. *Tree: met — the record's rows and the
+    skill page's two sections. The page describes the refusal without naming
+    its code: `tools/check-skill-page.py` holds every code a page names to the
+    page's engine pin, a release that predates `DW0898`, so the code's name is
+    added to the page when the pin moves to a release that declares it.*
 18. A demo-level row is queued when the code lands. *Tree: met — The Stable
     Yard.*
 
