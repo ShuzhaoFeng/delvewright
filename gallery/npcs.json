@@ -64,6 +64,11 @@
         "deferred": true,
         "id": "npc/marshal",
         "name": "The Marshal",
+        "offset": [
+          1,
+          0,
+          0
+        ],
         "persona": {
           "archetype": "drill officer",
           "motivation": "Call the muster and stand aside.",

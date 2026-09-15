@@ -43,7 +43,9 @@
                 "verb": "arrives"
               },
               "npc": "npc/keeper",
-              "to_anchor": "anchor/exit",
+              "to": {
+                "anchor": "anchor/exit"
+              },
               "type": "move-npc"
             }
           ]

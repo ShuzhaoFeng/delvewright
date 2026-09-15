@@ -557,7 +557,7 @@ fn a_body_is_posted_on_furniture_and_never_walked_onto_it() {
                 .push(serde_json::json!({
                     "type": "move-npc",
                     "npc": "npc/keeper",
-                    "to_anchor": "anchor/table-top"
+                    "to": { "anchor": "anchor/table-top" }
                 }));
         },
     );
@@ -566,7 +566,7 @@ fn a_body_is_posted_on_furniture_and_never_walked_onto_it() {
     let moves = delvec::compiler::nav::plan_moves(&plan, &world).expect("the walk routes");
     let leg = moves
         .iter()
-        .find(|m| m.to_anchor == "anchor/table-top")
+        .find(|m| m.to.anchor.as_str() == "anchor/table-top")
         .expect("the move is planned");
     assert_ne!(leg.target, pos, "the leg does not end on the table top");
     let (_, (lo, hi)) = plan
@@ -612,11 +612,11 @@ fn a_walked_leg_that_exists_only_over_furniture_is_dw0510() {
                 .as_array_mut()
                 .unwrap();
             talk.push(serde_json::json!({
-                "type": "move-npc", "npc": "npc/keeper", "to_anchor": "anchor/exit"
+                "type": "move-npc", "npc": "npc/keeper", "to": { "anchor": "anchor/exit" }
             }));
             talk.push(serde_json::json!({ "type": "spawn-actor", "actor": "actor/porter" }));
             talk.push(serde_json::json!({
-                "type": "move-actor", "actor": "actor/porter", "to_anchor": "anchor/exit"
+                "type": "move-actor", "actor": "actor/porter", "to": { "anchor": "anchor/exit" }
             }));
         },
     );

@@ -743,6 +743,17 @@ pub fn build_with_warnings(
     // line prints whether or not it found anything — a count only says something
     // when the run that found nothing prints it too — and prints before the
     // refusal, so a refused run still states what it examined.
+    // Every mark a body is put on stays inside the piece its anchor belongs to
+    // (DW0897, spec-0066): an offset says where beside a place, never which
+    // place. Runs before the occupancy rules that read those cells, and prints
+    // its binding line on every run, zeroes included.
+    let (marks, marks_verdict) = crate::compiler::mark::check_marks_in_piece(plan);
+    eprintln!("{}", marks.line());
+    marks_verdict.map_err(|e| BuildFailure::Diagnostic {
+        code: e.code,
+        message: e.message,
+    })?;
+
     let (one_mark, one_mark_verdict) = crate::compiler::cohabit::check_one_body_per_mark(plan);
     eprintln!("{}", one_mark.line());
     one_mark_verdict.map_err(|e| BuildFailure::Diagnostic {
@@ -5918,14 +5929,10 @@ fn emit_quest_effect(plan: &Plan, eff: &QuestEffect, aud: Audience, body: &mut V
                 plan::safe_local(npc.as_str())
             ));
         }
-        Verb::MoveNpc { npc, to_anchor, .. } => {
+        Verb::MoveNpc { npc, to, .. } => {
             body.push(format!(
                 "function {ns}:{}",
-                movenpc_fn(
-                    npc.as_str(),
-                    to_anchor.as_str(),
-                    &crate::compiler::nav::gate_key(eff),
-                )
+                movenpc_fn(npc.as_str(), to, &crate::compiler::nav::gate_key(eff),)
             ));
         }
         Verb::Cutscene { .. } => {
@@ -6030,16 +6037,10 @@ fn emit_quest_effect(plan: &Plan, eff: &QuestEffect, aud: Audience, body: &mut V
                 .any(|a| a.id.as_str() == actor.as_str() && !a.drops.is_empty());
             emit_despawn_actor(actor.as_str(), *style, declares_drops, body);
         }
-        Verb::MoveActor {
-            actor, to_anchor, ..
-        } => {
+        Verb::MoveActor { actor, to, .. } => {
             body.push(format!(
                 "function {ns}:{}",
-                moveactor_fn(
-                    actor.as_str(),
-                    to_anchor.as_str(),
-                    &crate::compiler::nav::gate_key(eff),
-                )
+                moveactor_fn(actor.as_str(), to, &crate::compiler::nav::gate_key(eff),)
             ));
         }
         Verb::UnleashActor { actor, .. } => {
@@ -6220,8 +6221,11 @@ fn emit_play_sound(
         format!("minecraft:{sound}")
     };
     let pos = match at {
-        Some(SoundAt::Anchor { anchor }) => match anchor_point_any(plan, anchor.as_str()) {
-            Some(p) => Some(format!("{} {} {}", p[0], p[1], p[2])),
+        Some(SoundAt::Anchor { anchor, offset }) => match anchor_point_any(plan, anchor.as_str()) {
+            Some(p) => {
+                let p = delvewright_dsl::offset_cell(p, *offset);
+                Some(format!("{} {} {}", p[0], p[1], p[2]))
+            }
             None => return, // unresolved anchor (referential validation reports it)
         },
         Some(SoundAt::Actor { .. }) => return, // unsupported: DW0335 at validate-time
@@ -9055,11 +9059,15 @@ fn npc_summon_commands(
     // `(area, name)` lookup here is how the world-init summon and the plan came
     // to describe two buildings 256 blocks apart in one build.
     let station = plan::body_station(&plan.anchors, plan::BodyScope::Declared { area }, anchor);
+    let offset = dsl_npc.map(|n| n.offset).unwrap_or([0, 0, 0]);
     let (pos, facing) = match &station {
         plan::BodyStation::At {
             anchor: ResolvedAnchor::Point { pos, facing },
             ..
-        } => (*pos, facing.as_deref()),
+        } => (
+            delvewright_dsl::offset_cell(*pos, offset),
+            facing.as_deref(),
+        ),
         _ => ([0, plan::BASE_Y, 0], None),
     };
     let name = dsl_npc.map(|n| n.name.as_str()).unwrap_or("NPC");
@@ -9099,7 +9107,10 @@ fn npc_summon_commands(
     // The interaction hitbox also carries the tag of every left-click trigger
     // that watches this NPC — see `npc_hitbox_trigger_tags`.
     let mut tags = vec![npc.tag.clone()];
-    tags.extend(npc_hitbox_trigger_tags(c, anchor, &npc.npc_id));
+    // A `strike` at the anchor rides this hitbox only while the body stands on
+    // the anchor's own cell (spec-0066).
+    let stand_anchor = if offset == [0, 0, 0] { anchor } else { "" };
+    tags.extend(npc_hitbox_trigger_tags(c, stand_anchor, &npc.npc_id));
     let tag_list = tags
         .iter()
         .map(|t| format!("\"{t}\""))
@@ -9153,7 +9164,12 @@ fn first_strike_trigger_on_npc<'a>(
                 .npcs
                 .iter()
                 .find(|d| d.id.as_str() == n.npc_id);
-            let anchor = decl.map(|d| d.anchor.as_str()).unwrap_or("");
+            // A body at an offset does not stand on its anchor's cell, so a
+            // `strike` at that anchor is not on its hitbox (spec-0066).
+            let anchor = decl
+                .filter(|d| d.offset == [0, 0, 0])
+                .map(|d| d.anchor.as_str())
+                .unwrap_or("");
             if trigger_rides_npc(t, anchor, &n.npc_id) {
                 return Some((t, n.npc_id.clone(), n.tag.clone()));
             }
@@ -9188,12 +9204,9 @@ fn trigger_rides_npc(t: &delvewright_dsl::EnvTrigger, anchor: &str, npc_id: &str
 /// predicate says exist.
 fn npc_stands_at(plan: &Plan, anchor: &str) -> bool {
     plan.npcs.iter().any(|n| {
-        plan.campaign
-            .npcs
-            .content
-            .npcs
-            .iter()
-            .any(|d| d.id.as_str() == n.npc_id && d.anchor.as_str() == anchor)
+        plan.campaign.npcs.content.npcs.iter().any(|d| {
+            d.id.as_str() == n.npc_id && d.anchor.as_str() == anchor && d.offset == [0, 0, 0]
+        })
     })
 }
 
@@ -9295,11 +9308,31 @@ fn spawn_npc_fns(plan: &Plan) -> Vec<(String, String)> {
 
 /// The generated function name for a `move-npc` effect (content-derived key, so
 /// the start-caller and the generator agree without threading an index).
-fn movenpc_fn(npc: &str, to_anchor: &str, gate_key: &str) -> String {
+fn movenpc_fn(npc: &str, to: &delvewright_dsl::Mark, gate_key: &str) -> String {
+    format!("mv_{}_{}{gate_key}", plan::safe_local(npc), mark_key(to))
+}
+
+/// The function-name component a destination mark contributes: the anchor's
+/// local name, and for a non-zero offset `_o<x>_<y>_<z>` with a negative
+/// component spelled `m<n>` (spec-0066). A zero offset adds nothing, so a walk to
+/// a bare anchor keeps the name it has always had.
+fn mark_key(to: &delvewright_dsl::Mark) -> String {
+    let base = plan::safe_local(to.anchor.as_str());
+    if !to.is_offset() {
+        return base;
+    }
+    let c = |v: i32| {
+        if v < 0 {
+            format!("m{}", -i64::from(v))
+        } else {
+            v.to_string()
+        }
+    };
     format!(
-        "mv_{}_{}{gate_key}",
-        plan::safe_local(npc),
-        plan::safe_local(to_anchor)
+        "{base}_o{}_{}_{}",
+        c(to.offset[0]),
+        c(to.offset[1]),
+        c(to.offset[2])
     )
 }
 
@@ -9451,8 +9484,8 @@ fn push_effect_deep<'a>(e: &'a QuestEffect, out: &mut Vec<&'a QuestEffect>) {
 }
 
 /// The scoreboard-safe suffix shared by a move's driver functions/sentinels.
-fn movenpc_bare(npc: &str, to_anchor: &str, gate_key: &str) -> String {
-    movenpc_fn(npc, to_anchor, gate_key)
+fn movenpc_bare(npc: &str, to: &delvewright_dsl::Mark, gate_key: &str) -> String {
+    movenpc_fn(npc, to, gate_key)
         .strip_prefix("mv_")
         .unwrap_or("move")
         .to_string()
@@ -9479,7 +9512,7 @@ fn movenpc_bare(npc: &str, to_anchor: &str, gate_key: &str) -> String {
 ///
 /// # Supersession — one body, one live driver
 ///
-/// A driver's re-entry latch `#mrun_<bare>` is keyed per **(npc, to_anchor, gate)**:
+/// A driver's re-entry latch `#mrun_<bare>` is keyed per **(npc, to, gate)**:
 /// it stops a walk from restarting *itself* and knows nothing about the body's other
 /// walks. So a second `move-npc` fired at the same NPC while an earlier walk was
 /// still running used to leave **two** drivers alive, both teleporting the same
@@ -9516,26 +9549,21 @@ fn movenpc_fns(plan: &Plan, moves: &[crate::compiler::nav::MovePlan]) -> Vec<(St
         *legs.entry(m.npc.as_str()).or_insert(0) += 1;
     }
     for m in moves {
-        let start_name = movenpc_fn(&m.npc, &m.to_anchor, &m.gate_key);
-        let bare = movenpc_bare(&m.npc, &m.to_anchor, &m.gate_key);
+        let start_name = movenpc_fn(&m.npc, &m.to, &m.gate_key);
+        let bare = movenpc_bare(&m.npc, &m.to, &m.gate_key);
         let safe = plan::safe_local(&m.npc);
         let total = m.ticks();
         let supersedable = legs.get(m.npc.as_str()).copied().unwrap_or(0) > 1;
         // `#mown_<bare> < #mgen_<npc>` ⇔ a later walk for this body has started.
         let stale = format!("score #mown_{bare} dw.sys < #mgen_{safe} dw.sys");
-        // The on_arrive bundle for this (npc, to_anchor) — the first-seen effect,
+        // The on_arrive bundle for this (npc, to) — the first-seen effect,
         // matching the planner's dedup order (mirrors `actor_fns`).
         let on_arrive: &[QuestEffect] = all_campaign_effects(plan.campaign)
             .into_iter()
             .find_map(|e| match &e.verb {
                 Verb::MoveNpc {
-                    npc,
-                    to_anchor,
-                    on_arrive,
-                    ..
-                } if npc.as_str() == m.npc && to_anchor.as_str() == m.to_anchor => {
-                    Some(on_arrive.as_slice())
-                }
+                    npc, to, on_arrive, ..
+                } if npc.as_str() == m.npc && *to == m.to => Some(on_arrive.as_slice()),
                 _ => None,
             })
             .unwrap_or(&[]);
@@ -9970,17 +9998,13 @@ fn aggro_lock_lines(entity: &str, safe: &str) -> Vec<String> {
 }
 
 /// The generated start-function name for a `move-actor` (content key).
-fn moveactor_fn(actor: &str, to_anchor: &str, gate_key: &str) -> String {
-    format!(
-        "ma_{}_{}{gate_key}",
-        plan::safe_local(actor),
-        plan::safe_local(to_anchor)
-    )
+fn moveactor_fn(actor: &str, to: &delvewright_dsl::Mark, gate_key: &str) -> String {
+    format!("ma_{}_{}{gate_key}", plan::safe_local(actor), mark_key(to))
 }
 
 /// The scoreboard-safe suffix shared by a move-actor's driver functions/sentinels.
-fn moveactor_bare(actor: &str, to_anchor: &str, gate_key: &str) -> String {
-    moveactor_fn(actor, to_anchor, gate_key)
+fn moveactor_bare(actor: &str, to: &delvewright_dsl::Mark, gate_key: &str) -> String {
+    moveactor_fn(actor, to, gate_key)
         .strip_prefix("ma_")
         .unwrap_or("move")
         .to_string()
@@ -10117,7 +10141,7 @@ fn teleport_fn(eff: &QuestEffect) -> String {
 fn teleport_command(plan: &Plan, eff: &QuestEffect) -> Option<String> {
     let (from, to) = eff.teleport()?;
     let (lo, hi) = plan.zone_box(from)?;
-    let d = ent_xyz(anchor_point_any(plan, to.as_str())?);
+    let d = ent_xyz(to.cell(anchor_point_any(plan, to.anchor.as_str())?));
     Some(format!(
         "tp @e[{}] {} {} {}",
         entity_box_selector(lo, hi),
@@ -10156,7 +10180,7 @@ fn teleport_fns(plan: &Plan) -> Vec<(String, String)> {
 /// # Supersession — one puppet, one live leg driver
 ///
 /// A `move-actor` driver carries the identical defect `move-npc` had: its
-/// re-entry latch `#arun_<bare>` is keyed per **(actor, to_anchor, gate)**, so it only
+/// re-entry latch `#arun_<bare>` is keyed per **(actor, to, gate)**, so it only
 /// ever stopped a leg from restarting *itself*. Two overlapping legs on ONE puppet left
 /// two live drivers both `tp`-ing the same body every tick; they fought, and the longer
 /// leg — outliving the shorter — wrote the final position, parking the puppet at the
@@ -10182,7 +10206,7 @@ fn actor_fns(
     let mut out = Vec::new();
     for a in &plan.campaign.quests.content.actors {
         let safe = plan::safe_local(a.id.as_str());
-        let Some(pos) = anchor_point_any(plan, a.anchor.as_str()) else {
+        let Some(pos) = plan.body_point(delvewright_dsl::BodyRef::Actor(a)) else {
             continue; // resolution guaranteed by check_actor_placement (DW0325)
         };
         let yaw = actor_facing_yaw(a);
@@ -10252,24 +10276,22 @@ fn actor_fns(
     }
     for m in actor_moves {
         let safe = plan::safe_local(&m.actor);
-        let bare = moveactor_bare(&m.actor, &m.to_anchor, &m.gate_key);
+        let bare = moveactor_bare(&m.actor, &m.to, &m.gate_key);
         let total = m.ticks();
         let supersedable = legs.get(m.actor.as_str()).copied().unwrap_or(0) > 1;
         // `#aown_<bare> < #agen_<actor>` ⇔ a later leg for this puppet has started.
         let stale = format!("score #aown_{bare} dw.sys < #agen_{safe} dw.sys");
-        // The on_arrive bundle for this (actor, to_anchor) — the first-seen effect,
+        // The on_arrive bundle for this (actor, to) — the first-seen effect,
         // matching the planner's dedup order.
         let on_arrive: &[QuestEffect] = all_campaign_effects(plan.campaign)
             .into_iter()
             .find_map(|e| match &e.verb {
                 Verb::MoveActor {
                     actor,
-                    to_anchor,
+                    to,
                     on_arrive,
                     ..
-                } if actor.as_str() == m.actor && to_anchor.as_str() == m.to_anchor => {
-                    Some(on_arrive.as_slice())
-                }
+                } if actor.as_str() == m.actor && *to == m.to => Some(on_arrive.as_slice()),
                 _ => None,
             })
             .unwrap_or(&[]);
@@ -10295,10 +10317,7 @@ fn actor_fns(
         start.push(format!("scoreboard players set #arun_{bare} dw.sys 1"));
         start.push(format!("scoreboard players set #at_{bare} dw.sys 0"));
         start.push(format!("schedule function {ns}:ma_tick_{bare} 1t"));
-        out.push((
-            moveactor_fn(&m.actor, &m.to_anchor, &m.gate_key),
-            lines(&start),
-        ));
+        out.push((moveactor_fn(&m.actor, &m.to, &m.gate_key), lines(&start)));
 
         let mut tick: Vec<String> = Vec::new();
         if supersedable {
@@ -14019,26 +14038,23 @@ fn campaign_complete_tail(
                 })
                 .max(),
             Verb::MoveNpc {
-                npc,
-                to_anchor,
-                on_arrive,
-                ..
+                npc, to, on_arrive, ..
             } => campaign_complete_tail(on_arrive, moves, actor_moves).map(|t| {
                 t + moves
                     .iter()
-                    .find(|m| m.npc == npc.as_str() && m.to_anchor == to_anchor.as_str())
+                    .find(|m| m.npc == npc.as_str() && m.to == *to)
                     .map(|m| m.ticks() as u32)
                     .unwrap_or(0)
             }),
             Verb::MoveActor {
                 actor,
-                to_anchor,
+                to,
                 on_arrive,
                 ..
             } => campaign_complete_tail(on_arrive, moves, actor_moves).map(|t| {
                 t + actor_moves
                     .iter()
-                    .find(|m| m.actor == actor.as_str() && m.to_anchor == to_anchor.as_str())
+                    .find(|m| m.actor == actor.as_str() && m.to == *to)
                     .map(|m| m.ticks() as u32)
                     .unwrap_or(0)
             }),
@@ -14351,11 +14367,8 @@ fn emit_scheduled_executor_packtests(
             .into_iter()
             .find_map(|e| match &e.verb {
                 Verb::MoveNpc {
-                    npc,
-                    to_anchor,
-                    on_arrive,
-                    ..
-                } if npc.as_str() == m.npc && to_anchor.as_str() == m.to_anchor => on_arrive
+                    npc, to, on_arrive, ..
+                } if npc.as_str() == m.npc && *to == m.to => on_arrive
                     .iter()
                     .find_map(|a| match &a.verb {
                         Verb::SetFlag { flag, .. } => Some(flag.as_str().to_string()),
@@ -14366,7 +14379,7 @@ fn emit_scheduled_executor_packtests(
             })
     });
     let Some((m, flag)) = arrival else { return };
-    let bare = movenpc_bare(&m.npc, &m.to_anchor, &m.gate_key);
+    let bare = movenpc_bare(&m.npc, &m.to, &m.gate_key);
     let score = plan::flag_score(&flag);
 
     // The walk is real, so the test must outlive it: the driver reschedules
@@ -14391,7 +14404,7 @@ fn emit_scheduled_executor_packtests(
     // stands still throughout; nothing here supplies it as an executor.
     t.push(format!(
         "function {ns}:{}",
-        movenpc_fn(&m.npc, &m.to_anchor, &m.gate_key)
+        movenpc_fn(&m.npc, &m.to, &m.gate_key)
     ));
     t.push(format!("await score {} {score} matches 1", plan::PARTY));
     out.insert(
@@ -16095,13 +16108,12 @@ fn emit_reseat_undefeated_packtests(plan: &Plan, out: &mut BuildOutput) {
         .collect();
 
     // --- the actor elite (the barrow-warden's defect) ---
-    if let Some(a) = plan
-        .reseat_actors()
-        .into_iter()
-        .find(|a| anchor_point_any(plan, a.anchor.as_str()).is_some())
-    {
+    if let Some(a) = plan.reseat_actors().into_iter().find(|a| {
+        plan.body_point(delvewright_dsl::BodyRef::Actor(a))
+            .is_some()
+    }) {
         let safe = plan::safe_local(a.id.as_str());
-        let origin = ent_xyz(anchor_point_any(plan, a.anchor.as_str()).unwrap());
+        let origin = ent_xyz(plan.body_point(delvewright_dsl::BodyRef::Actor(a)).unwrap());
         let (pin, sel) = pin_dummy("dw_rsua");
         let mut b = packtest_header(&format!(
             "{title}: a rest re-seats the undefeated elite `{}` at its origin, and never \
@@ -18749,7 +18761,7 @@ fn emit_v06_actor_packtests(
     // that same tick) and assert the puppet is at the destination cell.
     if let Some(m) = actor_moves.first() {
         let safe = plan::safe_local(&m.actor);
-        let bare = moveactor_bare(&m.actor, &m.to_anchor, &m.gate_key);
+        let bare = moveactor_bare(&m.actor, &m.to, &m.gate_key);
         let total = m.ticks();
         let p = m.target;
         let mut b = packtest_header(&format!(
@@ -18787,10 +18799,10 @@ fn emit_v06_actor_packtests(
             .find_map(|e| match &e.verb {
                 Verb::MoveActor {
                     actor,
-                    to_anchor,
+                    to,
                     on_arrive,
                     ..
-                } if actor.as_str() == m.actor && to_anchor.as_str() == m.to_anchor => on_arrive
+                } if actor.as_str() == m.actor && *to == m.to => on_arrive
                     .iter()
                     .find_map(|a| match &a.verb {
                         Verb::SpawnNpc { npc, .. } => Some(npc.as_str().to_string()),
@@ -18808,7 +18820,7 @@ fn emit_v06_actor_packtests(
             .map(|n| n.tag.clone())
     {
         let safe = plan::safe_local(&m.actor);
-        let bare = moveactor_bare(&m.actor, &m.to_anchor, &m.gate_key);
+        let bare = moveactor_bare(&m.actor, &m.to, &m.gate_key);
         let total = m.ticks();
         // Every distinct gate a `close-gate` effect seals, in first-appearance
         // order (deterministic).
@@ -19194,7 +19206,7 @@ fn emit_v04_packtests(
     // is the path's real final waypoint.
     if let Some(m) = moves.first() {
         let safe = plan::safe_local(&m.npc);
-        let bare = movenpc_bare(&m.npc, &m.to_anchor, &m.gate_key);
+        let bare = movenpc_bare(&m.npc, &m.to, &m.gate_key);
         let total = m.ticks();
         let p = m.target;
         let mut b = packtest_header(&format!(
@@ -21313,6 +21325,7 @@ mod tests {
             name: Some("Boss".to_string()),
             skin: None,
             anchor: delvewright_dsl::AnchorId("anchor/stage".to_string()),
+            offset: [0, 0, 0],
             facing: Some(delvewright_dsl::Facing::West),
             vulnerable,
             equipment: None,
@@ -21702,6 +21715,7 @@ mod loot_emit_tests {
             name: None,
             skin: None,
             anchor: delvewright_dsl::AnchorId("anchor/stage".to_string()),
+            offset: [0, 0, 0],
             facing: None,
             vulnerable: false,
             equipment: eq,

@@ -546,7 +546,7 @@ fn posted_places(
     }
     let c = plan.campaign;
     for npc in &c.npcs.content.npcs {
-        if let Some(pos) = plan.point_any(npc.anchor.as_str()) {
+        if let Some(pos) = plan.body_point(delvewright_dsl::BodyRef::Npc(npc)) {
             push(
                 &mut out,
                 format!("npc `{}`'s post `{}`", npc.id, npc.anchor),
@@ -561,8 +561,9 @@ fn posted_places(
     for q in &c.quests.content.quests {
         for (npc, entry) in &q.cast {
             for pl in entry.placements() {
-                let Some(at) = pl.at.anchor() else { continue };
-                let Some(pos) = plan.point_any(at.as_str()) else {
+                let Some(mark) = pl.at.mark() else { continue };
+                let at = mark.display();
+                let Some(pos) = plan.point_any(mark.anchor.as_str()).map(|p| mark.cell(p)) else {
                     continue;
                 };
                 let body = c
@@ -582,7 +583,7 @@ fn posted_places(
         }
     }
     for a in &c.quests.content.actors {
-        if let Some(pos) = plan.point_any(a.anchor.as_str()) {
+        if let Some(pos) = plan.body_point(delvewright_dsl::BodyRef::Actor(a)) {
             let (w, h) =
                 crate::compiler::nav::entity_dims(&crate::compiler::nav::actor_body_entity(a));
             push(

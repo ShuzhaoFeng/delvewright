@@ -153,9 +153,11 @@ this section is what they are *for* and the traps in each.
   field on an arbitrary effect: putting one on a quest-level `set-flag` is
   `DW0100`, and the refusal enumerates what that object does take.
 - **The `cast` block, first in every quest.** Every quest declares, for every
-  NPC live in it, `{at, doing, dialogue}`. `at` is an anchor, or `"offstage"` /
-  `"dead"`, which must match a real `despawn-npc` — declaring a position does
-  not move anybody (`DW0461`). `doing` is free prose and is the point: you
+  NPC live in it, `{at, doing, dialogue}`. `at` is an anchor, a mark
+  `{"anchor": …, "offset": [x, y, z]}` — the spelling for a body that stands at
+  an offset, which must spell the same offset the body stands at — or
+  `"offstage"` / `"dead"`, which must match a real `despawn-npc`. Declaring a
+  position does not move anybody (`DW0461`). `doing` is free prose and is the point: you
   cannot fill it without deciding the character's business in this beat, and the
   dialogue stage writes their lines against it. `dialogue` is a dialogue root
   id, `{"barks": [...]}`, `"unchanged"`, or `"none"`.
@@ -240,7 +242,8 @@ this section is what they are *for* and the traps in each.
   walks up to this and the door opens", use an environment `trigger` — that one
   counts.
 - **A teleport selects a REGION, never a block.** `teleport {from {anchor,
-  extent}, to}` moves **everything** inside the box to the destination anchor —
+  extent}, to {anchor, offset?}}` moves **everything** inside the box to the
+  destination mark —
   players and entities alike, which is what makes a cargo platform the same
   mechanism as a passenger one. Nothing is exempt, so do not draw the volume
   over an affordance the engine anchors to a block (an interact objective, a
@@ -349,6 +352,17 @@ this section is what they are *for* and the traps in each.
 
 ## Bodies
 
+- **A body stands at a mark: an anchor plus an optional `offset`.** `"anchor":
+  "anchor/muster", "offset": [0, 0, -2]` on an NPC or an actor stands it two
+  blocks north of the anchor's cell. A rank of six men-at-arms is one anchor and
+  six offsets — never six anchors, and never six bodies on one anchor
+  (`DW0896`). A walk's destination takes the same object: `move-npc` /
+  `move-actor` write `"to": {"anchor": "anchor/rank", "offset": [0, 0, -6]}`, so
+  a rank is formed by walking as well as spawned in formation. Every offset stays
+  inside the piece its anchor belongs to, and the build refuses one that leaves
+  it, naming the cell it reaches and the box it left — an offset says where
+  beside a place, never which place; to stand a body in another room, name that
+  room's anchor.
 - **`base_entity` accepts any entity id, and NPCs are inert by construction.**
   Every NPC is summoned `NoAI,Invulnerable,Silent,NoGravity,PersistenceRequired`
   plus a separate interaction hitbox, and there is no registry validation on the
