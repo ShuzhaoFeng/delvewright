@@ -19,7 +19,14 @@
 //!
 //! ```text
 //! [DelveNote] pos=[x,y,z] area=<area-id|none> quests=<obj-id:v,…> nearest_npc=<npc-id|none>
+//! [DelveNoteQuests] <obj-id:v,…>
 //! ```
+//!
+//! A chat message holds at most 256 characters (`commands::MESSAGE_MAX_CHARS`),
+//! and a campaign's objectives do not fit one: the `quests=` field carries the
+//! objectives that fit its line, and each `[DelveNoteQuests]` line after it — in
+//! the same function, so consecutive in the log — carries the next ones. The
+//! harvester appends a continuation line's objectives to the stamp before it.
 //!
 //! - **pos** — an **entity-NBT macro read** of the triggering player: the handler
 //!   reads `Pos[0..2]` off the player entity into `storage <ns>:note` as ints, then
@@ -218,18 +225,24 @@ fn emit_functions(plan: &Plan, inv: &Inventory) -> Vec<(String, String)> {
     stamp.push(format!("function {ns}:creator/emit with storage {storage}"));
     fns.push(("stamp".to_string(), lines(&stamp)));
 
-    // emit: the single macro line. `say` so it reaches the server stdout log
-    // (see module docs). Objective ids are baked into the text; only the live
-    // values are macro-substituted.
-    let quests: Vec<String> = objectives(plan)
+    // emit: the stamp and its continuation lines. `say` so they reach the server
+    // stdout log (see module docs). Objective ids are baked into the text; only
+    // the live values are macro-substituted.
+    let entries: Vec<String> = objectives(plan)
         .into_iter()
         .map(|(key, obj_id)| format!("{obj_id}:$({key})"))
         .collect();
-    let quests = quests.join(",");
-    let macro_line = format!(
-        "$say [DelveNote] pos=[$(x),$(y),$(z)] area=$(area) quests={quests} nearest_npc=$(npc)"
-    );
-    fns.push(("emit".to_string(), lines(&[macro_line])));
+    let longest = |ids: &mut dyn Iterator<Item = usize>| ids.max().unwrap_or(0).max(4);
+    let area_chars = longest(&mut plan.areas.iter().map(|a| a.area_id.chars().count()));
+    let npc_chars = longest(&mut plan.npcs.iter().map(|n| n.npc_id.chars().count()));
+    let head = "$say [DelveNote] pos=[$(x),$(y),$(z)] area=$(area) nearest_npc=$(npc) quests=";
+    // The line's longest substitution: three coordinates, the longest area and
+    // NPC id, and every objective value at an integer's full width.
+    let head_chars = substituted_chars(head) + 3 * INT_CHARS + area_chars + npc_chars;
+    fns.push((
+        "emit".to_string(),
+        lines(&chunk_stamp(head, head_chars, &entries)),
+    ));
 
     fns.extend(camera_fns(ns));
     fns.extend(rehearsal_fns(ns, inv));
@@ -1217,6 +1230,58 @@ fn emit_layout(plan: &Plan, inv: &Inventory) -> serde_json::Value {
 
 // --- helpers (mirror emit.rs conventions) ---
 
+/// The widest text an `int` macro value substitutes to (`-2147483648`).
+const INT_CHARS: usize = 11;
+
+/// A macro line's text with every `$(name)` removed and its leading `$` and
+/// command dropped, in characters: what the message argument holds before any
+/// value is substituted.
+fn substituted_chars(line: &str) -> usize {
+    let body = line.strip_prefix("$say ").unwrap_or(line);
+    let mut n = 0;
+    let mut rest = body;
+    while let Some(start) = rest.find("$(") {
+        n += rest[..start].chars().count();
+        rest = match rest[start..].find(')') {
+            Some(end) => &rest[start + end + 1..],
+            None => "",
+        };
+    }
+    n + rest.chars().count()
+}
+
+/// `head` followed by as many `obj:$(key)` entries as keep the line inside a chat
+/// message at its longest substitution (every value at [`INT_CHARS`]), then one
+/// `[DelveNoteQuests]` line per further run of entries that fits.
+fn chunk_stamp(head: &str, head_chars: usize, entries: &[String]) -> Vec<String> {
+    use crate::compiler::commands::MESSAGE_MAX_CHARS;
+    let cont = "$say [DelveNoteQuests] ";
+    let entry_chars = |e: &str| substituted_chars(e) + INT_CHARS;
+    let mut out = Vec::new();
+    let (mut line, mut chars, mut first) = (head.to_string(), head_chars, true);
+    let mut empty = true;
+    for e in entries {
+        let add = entry_chars(e) + usize::from(!empty);
+        if chars + add > MESSAGE_MAX_CHARS && !empty {
+            out.push(line);
+            line = cont.to_string();
+            chars = substituted_chars(cont);
+            first = false;
+            empty = true;
+        }
+        if !empty {
+            line.push(',');
+        }
+        line.push_str(e);
+        chars += entry_chars(e) + usize::from(!empty);
+        empty = false;
+    }
+    if !empty || first {
+        out.push(line);
+    }
+    out
+}
+
 fn lines(v: &[String]) -> String {
     let mut s = v.join("\n");
     s.push('\n');
@@ -1237,6 +1302,42 @@ mod tests {
     /// that gets it there is a truncating float cast — so the one thing worth
     /// pinning is that it truncates to the figure the overlay has always emitted
     /// rather than to the one below it.
+    /// However many objectives a campaign has, every stamp line stays inside a
+    /// chat message at its longest substitution, and every objective is on
+    /// exactly one line.
+    #[test]
+    fn a_note_stamp_splits_its_objectives_across_lines_that_fit() {
+        let head = "$say [DelveNote] pos=[$(x),$(y),$(z)] area=$(area) nearest_npc=$(npc) quests=";
+        let head_chars = substituted_chars(head) + 3 * INT_CHARS + 40 + 40;
+        let entries: Vec<String> = (0..60)
+            .map(|i| format!("obj/a-long-objective-name-{i}:$(o_a_long_objective_name_{i})"))
+            .collect();
+        let out = chunk_stamp(head, head_chars, &entries);
+        assert!(out.len() > 2, "{out:?}");
+        assert!(out[0].starts_with(head));
+        let mut seen = Vec::new();
+        for (i, line) in out.iter().enumerate() {
+            // Every placeholder at an integer's width, the area and NPC ids at
+            // the 40 characters stated above.
+            let placeholders = line.matches("$(").count();
+            let longest = if i == 0 {
+                substituted_chars(line) + INT_CHARS * (placeholders - 2) + 80
+            } else {
+                substituted_chars(line) + INT_CHARS * placeholders
+            };
+            assert!(longest <= 256, "line {i} reaches {longest}: {line}");
+            let fields = if i == 0 {
+                line.strip_prefix(head).unwrap()
+            } else {
+                line.strip_prefix("$say [DelveNoteQuests] ").unwrap()
+            };
+            seen.extend(fields.split(',').map(str::to_string));
+        }
+        assert_eq!(seen, entries);
+        // No objectives: one line, an empty field.
+        assert_eq!(chunk_stamp(head, head_chars, &[]), vec![head.to_string()]);
+    }
+
     #[test]
     fn the_eye_height_scales_into_milli_blocks_without_losing_a_unit() {
         assert_eq!(RH_EYE_MB, 1620);

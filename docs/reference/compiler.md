@@ -7219,7 +7219,7 @@ tests if any overlay function ever again arms and disarms the same objective.
 [DelveShot] shot=<n> beat=<n> ptr=<json-pointer> idx=<n> seconds=<n> look_at=<x,y,z|none> path=<x,y,z;…>
 ```
 
-`say`, not `tellraw` — the same channel and the same reason as `[DelveNote]`
+`say`, not `tellraw` — the same channel and the same reason as `[DelveNote]` (whose objectives continue on `[DelveNoteQuests]` lines after the stamp when one chat message cannot hold them; the harvester appends them to the stamp before)
 (spec-0006 §3): a system message to players never reaches the server stdout log
 the harvester reads. `shot`/`beat`/`ptr`/`idx` are compile-time constants, so a
 harvested proposal always knows which DSL node its patch belongs on; only the

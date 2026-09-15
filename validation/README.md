@@ -295,8 +295,9 @@ EULA=TRUE CREATOR_NAME=<your-mc-name> \
 ```
 
 Join at `localhost:25565` (`owner-play.yaml` is what publishes it). While playing, aim at something wrong and run
-`/trigger dw.note` — the overlay stamps one machine-readable line into the server
-log (`[DelveNote] pos=[x,y,z] area=… quests=… nearest_npc=…`) — then type your note
+`/trigger dw.note` — the overlay stamps a machine-readable line into the server
+log (`[DelveNote] pos=[x,y,z] area=… nearest_npc=… quests=…`, followed by
+`[DelveNoteQuests] …` lines for the objectives one chat message cannot hold) — then type your note
 as a normal chat message. `CREATOR_NAME` ops you so you can `/tp` and inspect; leave
 it unset to skip opping (the note trigger works either way). It must be a
 **resolvable** Minecraft name — itzg looks the op up online, so a fake offline name

@@ -744,7 +744,6 @@ mod tests {
         }
     }
 
-    #[test]
     /// A chat message over the parser's bound is refused, naming its length; one
     /// at the bound, and a macro line whose placeholders would take it past the
     /// bound only once substituted, are accepted.
