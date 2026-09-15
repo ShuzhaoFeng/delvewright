@@ -9352,6 +9352,87 @@ mod tests {
         )
     }
 
+    /// A floor at `y - 1` over `[0,w) × [0,d)` with open air to `y + 3`, `solid`
+    /// extra cells, and one declared furniture region when `region` is `Some`.
+    fn floored_with_furniture(
+        w: i32,
+        d: i32,
+        y: i32,
+        extra: &[[i32; 3]],
+        region: Option<([i32; 3], [i32; 3])>,
+    ) -> World {
+        let mut solid = BTreeSet::new();
+        for x in 0..w {
+            for z in 0..d {
+                solid.insert([x, y - 1, z]);
+            }
+        }
+        solid.extend(extra.iter().copied());
+        World::from_occupancy(
+            crate::compiler::assembled::Occupancy {
+                solid,
+                tall: BTreeSet::new(),
+                use_gates: BTreeSet::new(),
+                flooded: BTreeSet::new(),
+                partial: BTreeMap::new(),
+                waterloggable: BTreeSet::new(),
+            },
+            Premises {
+                ambient: Ambient::Void,
+                base: "void",
+                built: Vec::new(),
+                lethal_regions: Vec::new(),
+                furniture_regions: region
+                    .map(|r| vec![("anchor/table".to_string(), r)])
+                    .unwrap_or_default(),
+                world_load_seals: Vec::new(),
+                clocked_gates: BTreeSet::new(),
+                transit_teleports: Vec::new(),
+                objective_cells: Vec::new(),
+            },
+        )
+    }
+
+    /// **A body may not be proven to stand ON furniture** (spec-0065 §4.1, §9.3).
+    ///
+    /// One solid block inside a furniture region, an air cell inside the same
+    /// region beside it, and the floor around both. Over the solid cell: refused.
+    /// Beside it, feet on the floor: untouched. With its feet in the region's
+    /// air cell and the floor under it: untouched, because the rule is the
+    /// support cell's membership, not the body's. The same world with the region
+    /// removed: all three stand.
+    #[test]
+    fn a_body_may_not_stand_on_a_solid_furniture_cell() {
+        let top = [3, 65, 3];
+        let region = ([3, 65, 3], [4, 65, 3]);
+        let on = [3, 66, 3];
+        let beside = [2, 65, 3];
+        let over_air = [4, 65, 3];
+        let fp = Footprint::player();
+        let w = floored_with_furniture(8, 8, 65, &[top], Some(region));
+        assert!(!w.standable_fp(on, &fp), "the table top is withheld");
+        assert!(w.standable_fp(beside, &fp), "the floor beside it is not");
+        assert!(
+            w.standable_fp(over_air, &fp),
+            "an air cell of the region withholds nothing"
+        );
+        assert_eq!(w.furniture_census(), (1, 1, 1));
+        assert_eq!(w.furniture_over(&[on]), vec!["anchor/table"]);
+        assert!(w.furniture_over(&[beside, over_air]).is_empty());
+
+        let bare = floored_with_furniture(8, 8, 65, &[top], None);
+        for c in [on, beside, over_air] {
+            assert!(
+                bare.standable_fp(c, &fp),
+                "{c:?} stands with no declaration"
+            );
+        }
+        assert_eq!(bare.furniture_census(), (0, 0, 0));
+        // …and the counterfactuals lift it.
+        assert!(w.without_exclusions().standable_fp(on, &fp));
+        assert!(w.without_furniture().standable_fp(on, &fp));
+    }
+
     /// **A body may not stand on the cell beside a killing volume's face.**
     ///
     /// The impassable set used to be the volume's own cells, so the cell one east
