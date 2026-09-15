@@ -1013,7 +1013,7 @@ pub struct Plan<'a> {
     /// because both copies of the blocks are in the world. Empty for every
     /// campaign whose pieces declare none, which keeps every walk proof and
     /// output byte-identical.
-    pub furniture: Vec<(String, ([i32; 3], [i32; 3]))>,
+    pub furniture: Vec<FurnitureRegion>,
     /// Per-step stealth hint (DSL v0.4), aligned 1:1 with `critical_path`: `true`
     /// when the step's objective is `stealth`-marked → emitted as `sneak: true`.
     pub critical_path_sneak: Vec<bool>,
@@ -4046,6 +4046,9 @@ fn resolve_anchor(
     }
 }
 
+/// One placed furniture region: `(anchor name, inclusive world box)` (spec-0065).
+pub type FurnitureRegion = (String, ([i32; 3], [i32; 3]));
+
 /// **Every furniture region the placed pieces declare**, in world space
 /// (spec-0065 §4.1).
 ///
@@ -4055,10 +4058,7 @@ fn resolve_anchor(
 /// blocks are in the world all the same. Detail pieces are placed pieces too, so
 /// they are reached by the same walk. Order: area, placed piece, anchor name
 /// (the prefab document's map is a `BTreeMap`).
-fn collect_furniture(
-    areas: &[AreaPlacement],
-    prefabs: &PrefabRegistry,
-) -> Vec<(String, ([i32; 3], [i32; 3]))> {
+fn collect_furniture(areas: &[AreaPlacement], prefabs: &PrefabRegistry) -> Vec<FurnitureRegion> {
     let mut out = Vec::new();
     for area in areas {
         for piece in &area.pieces {

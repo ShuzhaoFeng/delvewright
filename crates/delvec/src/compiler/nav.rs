@@ -859,11 +859,11 @@ pub fn built_volume(plan: &Plan) -> Vec<BuiltPiece> {
 /// the box being inclusive world-space corners.
 type LethalRegion = (String, ([i32; 3], [i32; 3]));
 
-/// One declared furniture region as the navigation model carries it:
-/// `(anchor name, box)`, the box being inclusive world-space corners
-/// (spec-0065). Same shape as [`LethalRegion`] for the same reason — a proof that
-/// refuses over it has to be able to name the anchor.
-type FurnitureRegion = (String, ([i32; 3], [i32; 3]));
+/// One placed furniture region as the navigation model carries it — the plan's
+/// own type, `(anchor name, inclusive world box)` (spec-0065). Same shape as
+/// [`LethalRegion`] for the same reason: a proof that refuses over it has to be
+/// able to name the anchor.
+use crate::compiler::plan::FurnitureRegion;
 
 /// One placed piece as the built volume carries it: `(prefab id, box)`, the box
 /// being inclusive world-space corners. Same shape as [`LethalRegion`] and for

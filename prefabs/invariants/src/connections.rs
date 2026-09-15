@@ -963,7 +963,11 @@ mod tests {
         let props = |t: &str| BTreeMap::from([("type".to_string(), t.to_string())]);
         let slab = "minecraft:spruce_slab";
         for face in ["north", "south", "east", "west", "up"] {
-            assert_eq!(face_support(slab, &props("bottom"), face), Some(false), "{face}");
+            assert_eq!(
+                face_support(slab, &props("bottom"), face),
+                Some(false),
+                "{face}"
+            );
         }
         assert_eq!(face_support(slab, &props("bottom"), "down"), Some(true));
         assert_eq!(face_support(slab, &props("top"), "up"), Some(true));
