@@ -81,6 +81,11 @@
         "facing": "north",
         "id": "actor/sergeant",
         "name": "The Sergeant",
+        "offset": [
+          1,
+          0,
+          0
+        ],
         "tier": "elite",
         "vulnerable": true
       },
@@ -123,10 +128,15 @@
         "id": "actor/hall-usher"
       },
       {
-        "anchor": "anchor/page",
+        "anchor": "anchor/usher",
         "entity": "minecraft:villager",
         "facing": "south",
-        "id": "actor/hall-page"
+        "id": "actor/hall-page",
+        "offset": [
+          4,
+          0,
+          0
+        ]
       }
     ],
     "ambushes": [
@@ -283,7 +293,14 @@
               ]
             },
             {
-              "at": "anchor/muster",
+              "at": {
+                "anchor": "anchor/muster",
+                "offset": [
+                  1,
+                  0,
+                  0
+                ]
+              },
               "dialogue": {
                 "barks": [
                   "Form up."
@@ -856,7 +873,12 @@
                     {
                       "at": {
                         "anchor": "anchor/pedestal",
-                        "at": "anchor"
+                        "at": "anchor",
+                        "offset": [
+                          0,
+                          1,
+                          0
+                        ]
                       },
                       "sound": "minecraft:block.chest.close",
                       "type": "play-sound",
@@ -934,7 +956,14 @@
           },
           "npc/marshal": [
             {
-              "at": "anchor/muster",
+              "at": {
+                "anchor": "anchor/muster",
+                "offset": [
+                  1,
+                  0,
+                  0
+                ]
+              },
               "dialogue": "dlg/marshal-read",
               "doing": "calling the muster to a party that read the label",
               "forbids_flags": [
@@ -952,7 +981,14 @@
               ]
             },
             {
-              "at": "anchor/muster",
+              "at": {
+                "anchor": "anchor/muster",
+                "offset": [
+                  1,
+                  0,
+                  0
+                ]
+              },
               "dialogue": "dlg/marshal-skipped",
               "doing": "calling the muster to a party that walked straight past",
               "requires_flags": [
@@ -1244,7 +1280,12 @@
               ],
               "speed": 1.2,
               "to": {
-                "anchor": "anchor/vantage"
+                "anchor": "anchor/vantage",
+                "offset": [
+                  2,
+                  0,
+                  0
+                ]
               },
               "type": "move-actor",
               "when": {
@@ -1512,7 +1553,12 @@
                 ]
               },
               "to": {
-                "anchor": "anchor/vantage"
+                "anchor": "anchor/vantage",
+                "offset": [
+                  -1,
+                  0,
+                  0
+                ]
               },
               "type": "teleport",
               "when": {
@@ -2198,7 +2244,14 @@
           },
           "npc/marshal": [
             {
-              "at": "anchor/muster",
+              "at": {
+                "anchor": "anchor/muster",
+                "offset": [
+                  1,
+                  0,
+                  0
+                ]
+              },
               "dialogue": "dlg/marshal-root",
               "doing": "forming up beyond the wall, indifferent to the cellar",
               "requires_flags": [
@@ -2206,7 +2259,14 @@
               ]
             },
             {
-              "at": "anchor/muster",
+              "at": {
+                "anchor": "anchor/muster",
+                "offset": [
+                  1,
+                  0,
+                  0
+                ]
+              },
               "dialogue": "dlg/marshal-root",
               "doing": "forming up beyond the wall, having walked straight past the label",
               "requires_flags": [

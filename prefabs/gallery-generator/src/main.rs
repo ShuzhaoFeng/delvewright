@@ -243,24 +243,16 @@ const ANCHORS: &[Anchor] = &[
         pos: [13, 1, 5],
         facing: Some("south"),
         trigger_block: None,
-        note: "a standing mark for a body a spawn puts down and NOTHING takes \
-               away. `DW0896` refuses two co-existing bodies on one cell, and it \
-               can only judge an entry against a body whose lifetime it can \
-               bound — every other actor in this hall is `vulnerable` or is \
-               despawned, so without this mark the live half of that rule binds \
-               to the world-init npcs alone and its timeline arm binds to nothing",
-        role: None,
-    },
-    Anchor {
-        name: "anchor/page",
-        pos: [17, 1, 5],
-        facing: Some("south"),
-        trigger_block: None,
-        note: "the second body of that pair, on its OWN cell — the pass side of \
-               `DW0896`. Two bodies enter the hall one after the other, from two \
-               steps of one `sequence`, and the rule compares them because both \
-               are alive at once. One anchor is one cell, so a rank of bodies \
-               needs a mark apiece: that is what this mark is",
+        note: "a standing place for two bodies a spawn puts down and NOTHING \
+               takes away: the usher on the anchor and the page at an offset \
+               from it, four cells east along the speaking row. `DW0896` refuses \
+               two co-existing bodies on one cell and judges an entry only \
+               against a body whose lifetime it can bound — every other actor \
+               in this hall is `vulnerable` or is despawned, so without this \
+               place the live half of that rule binds to the world-init npcs \
+               alone. One anchor and an offset apiece is how a rank of bodies \
+               is placed (spec-0066): the campaign spends one anchor on it, and \
+               `DW0897` holds each offset inside this piece",
         role: None,
     },
     Anchor {
