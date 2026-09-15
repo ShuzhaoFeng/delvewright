@@ -1,6 +1,6 @@
 # spec-0067: Every slot the game has
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Ground**: written against engine `495fca44` (`origin/main`), read only, and
   against four records of the pinned game. Two are the ones
   `crates/delvec/data/PROVENANCE.md` already names: the `misode/mcmeta`
@@ -39,9 +39,9 @@
   *Armor* (§ Mob armor), *Carved Pumpkin* (§ Usage) and *Slot*, the entity-type
   tags, and the equipment assets. Every rule below is marked **cited** or
   **authored**.
-- **Numbers**: no spec or ADR beyond this one. **One new DW code** (§5), to be
-  allocated at implementation. **`dsl_version` moves**: `equipment` gains two
-  fields and `drops[].slot` two values.
+- **Numbers**: no spec or ADR beyond this one. **One new DW code**, `DW0898`
+  (§5). **`dsl_version` 0.28.0**: `equipment` gains two fields and
+  `drops[].slot` two values.
 - **Non-goals**: a per-entity hitbox for the horse and the other mounts
   (`nav::entity_dims` has no row for them and falls back to the humanoid box;
   §7.1 names it as the adjacent gap it is); rideable mounts, a player on a
@@ -103,10 +103,9 @@ armour; **9** show `body`; **11** show `saddle`; **6** show the main hand
 only; **48 show nothing at all**; **63 hold hands the player never sees**
 (§4.1 has every name).
 
-This spec as first written judged fit by the item alone — its own
-`equippable.slot` and `allowed_entities`. Under that rule a diamond
-chestplate on a horse, which declares `chest` and no allowed list, passes,
-and the game never shows it. That is the same "structurally perfect NBT
+Fit judged by the item alone — its own `equippable.slot` and
+`allowed_entities` — passes a diamond chestplate on a horse, which declares
+`chest` and no allowed list, and the game never shows it. That is the same "structurally perfect NBT
 nobody sees" defect the spec exists to refuse, left open for every armour
 piece on every non-humanoid body and for every hand piece on 63 of the 92.
 
@@ -200,8 +199,8 @@ layer accepts the piece. The layers, and what each accepts:
   `DolphinCarryingItemLayer`, `PandaHoldsItemLayer` — the main hand only.
 - `SimpleEquipmentLayer(<type>)`, `WolfArmorLayer`, `LlamaDecorLayer` — `body`
   or `saddle`, for a piece whose asset has that layer type. The pinned assets
-  use **18** layer types; 16 of them name their body (`horse_body`,
-  `pig_saddle`, `camel_husk_saddle`, …), the other two are `humanoid` /
+  use **18** layer types; 15 of them name their body (`horse_body`,
+  `pig_saddle`, `camel_husk_saddle`, …), the other three are `humanoid`,
   `humanoid_leggings` and `wings`.
 
 So a piece has a **kind**, derived from the item data: **armour** (29 items —
@@ -235,7 +234,7 @@ show nothing and the 15 that show only `body` or `saddle`.
 `#minecraft:can_equip_saddle` exactly (11 = 11). The body rows are the union
 of the item `allowed_entities` lists (horse, zombie horse, nautilus, zombie
 nautilus, happy ghast, wolf, llama, trader llama) plus one body no item
-admits, the skeleton horse. The 16 body/saddle layer types the pinned assets
+admits, the skeleton horse. The 15 body/saddle layer types the pinned assets
 declare are exactly the types the rows name. The wiki page *Armor*'s list of
 mobs whose armour renders in Java equals the table's armour rows less player,
 mannequin and armor stand, whose own pages carry the fact. The wiki page
@@ -263,9 +262,12 @@ but nothing in the game's data says which entity types carry
 code. So the table is **authored from the pinned client's renderers under
 Mojang's published mappings**, vendored as
 `crates/dsl/data/entity-slots-1.21.11.json` — one row per living entity type
-in the pinned registry, slot → kinds drawn, the conditional hands marked, and
-each row naming the renderer class it was read from — with its provenance row
-in `PROVENANCE.md`. It is re-derived by the same reading when ADR-0009 moves
+in the pinned registry, keyed by namespaced id, each `{renderer, slots}`,
+where `slots` maps the game's slot name to `{kinds, layer?, when?}`: the
+kinds drawn (a hand lists all four), the body/saddle layer type, and the
+state a conditional hand is drawn in — with its provenance row in
+`PROVENANCE.md`. The three cross-checks below are
+`crates/delvec/tests/equipment_tables.rs`. It is re-derived by the same reading when ADR-0009 moves
 the pin. Three machine cross-checks hold it to the data every day between:
 (a) the saddle rows equal `#can_equip_saddle`; (b) the body rows contain the
 union of the item allowed lists and the excess is exactly the named list
@@ -283,7 +285,8 @@ for the rule.
 
 A declared piece is held to the table and the item data at validation, where
 the `DW0143` item check already runs. The body is the entity the puppet
-actually wears (`nav::actor_body_entity` — a skinned actor is a mannequin),
+actually wears (`BodyRef::worn_entity`, the one authority
+`nav::actor_body_entity` also reads — a skinned actor is a mannequin),
 resolved against ids and the entity-type tags through the vendored tag file.
 A piece is refused when any of three shapes holds, and the diagnostic states
 every shape that holds:
@@ -319,17 +322,22 @@ roofing prescription alone, as the phantom already does. A gate that names a
 remedy owes a check that the remedy is reachable; the test is §8.
 
 The item side reads a vendored derivation,
-`crates/delvec/data/item-equippable-1.21.11.json`: item id → `{slot,
-asset_id?, allowed_entities?}` and the derived kind, extracted from
-`item_components/data.min.json` and the equipment assets by a script beside
-the existing extractors, which pins both source digests and the counts of §1
+`crates/delvec/data/item-equippable-1.21.11.json`: `items`, item id →
+`{slot, asset_id?, allowed_entities?, kind}` (`allowed_entities` always a
+list), and `asset_layers`, every equipment asset's layer types, extracted from
+`item_components/data.min.json` and the equipment assets by
+`tools/extract-item-equippable.py`, which pins both source digests and the counts of §1
 and §4.1 (84 items; seven slot values; 45 with an allowed list; 29 armour, 1
-wings, 45 animal, 9 item) and refuses a source whose digest or counts differ.
-`PROVENANCE.md` gains its row.
+wings, 45 animal, 9 item; 44 assets, 18 layer types, 15 of them a body or
+saddle layer) and refuses a source whose digest or counts differ.
+`PROVENANCE.md` carries its row. The compiler injects it into validation
+through `ItemRegistry::equippable`; a registry that carries no equippable
+data judges nothing.
 
 ## 5. The refusal
 
-**Authored.** One new code, validation tier (exit 1), `dsl::validate`, three
+**Authored.** One new code, `DW0898`, validation tier (exit 1),
+`dsl::equipment::fit_checks` called from `dsl::validate`, three
 shapes of one rule — *a piece is declared where the game will show it, on
 this body*:
 
@@ -348,10 +356,10 @@ pinned data; a build is not needed to learn that a saddle does not go on a
 villager. Why one code: all three shapes are the pinned game contradicting a
 declaration about where a piece will be seen, and the three remedies never
 conflict; a diagnostic that holds several shapes says so in one message.
-Every build prints `equipment binding: B body(ies) dressed over K entity
-type(s), P piece(s) declared over S slot(s) in use, F piece(s) with a
-registry-declared slot, A with an allowed-entity list, R refused` — zeroes
-included.
+Every run of the validation funnel every subcommand goes through prints
+`equipment binding: B body(ies) dressed over K entity type(s), P piece(s)
+declared over S slot(s) in use, F piece(s) with a registry-declared slot, A
+with an allowed-entity list, R refused (DW0898).` — zeroes included.
 
 ## 6. What the gallery, the record and the skill owe
 
@@ -400,7 +408,7 @@ included.
 ### 7.1 The mount's body
 
 `nav::entity_dims` lists twenty-odd entities and falls back to `0.6 × 1.95`
-for the rest; `horse`, `donkey`, `mule`, `camel`, `pig`, `strider` and `llama`
+for the rest; `horse`, `donkey`, `mule`, `camel`, `strider` and `llama`
 are not in it. A horse actor is therefore routed and clearance-checked as a
 humanoid. This spec dresses the horse and does not size it; the gap is
 recorded as a ledger row against `entity_dims` with the binding computed
@@ -420,88 +428,110 @@ says a mount is posted, not walked, until that row closes.
 
 ## 8. Acceptance criteria
 
-Machine-checkable; each names its instrument, and each was checked against the
-tree at `495fca44` before being written. Where the tree cannot yet satisfy a
-criterion the verdict is recorded as a debt.
+Machine-checkable; each names its instrument. Each verdict states the tree
+that carries this spec's implementation; a criterion that tree cannot satisfy
+is recorded as a debt.
 
 1. **The vocabulary.** `EquipSlot::ALL` has eight arms; a test asserts the
    set equals the eight the wiki page lists, with `VanillaRule` provenance
    naming the page; `MobEquipment::slots()` and `strip_drops_line` derive
    their keys from it, asserted by a test that counts `drop_chances` keys in
-   the emitted strip line against `EquipSlot::ALL.len()`. *Tree: debt — six
-   arms, a fixed array, six hand-written keys.*
+   the emitted strip line against `EquipSlot::ALL.len()`. *Tree: met —
+   `equipment_tables.rs::the_slot_vocabulary_is_the_eight_the_game_names` and
+   `emit.rs::the_strip_line_zeroes_every_slot_the_game_has`.*
 2. **The registry cross-check.** A test over `item-equippable-1.21.11.json`
    asserts every `slot` value it holds is in `EquipSlot::ALL`, prints the
    per-slot counts, and asserts them equal to §1's (`body` 44, `head` 16,
    `chest` 8, `feet` 7, `legs` 7, `saddle` 1, `offhand` 1; 84 items; 45 with
    an allowed list) and the kinds of §4.1 (29 armour, 1 wings, 45 animal, 9
-   item). *Tree: debt — no such file.*
+   item). *Tree: met —
+   `equipment_tables.rs::every_slot_the_item_data_declares_is_in_the_vocabulary`.*
 3. **The extractor.** `tools/extract-item-equippable.py` pins the item-data
    digest `51b191e1…` and the equipment-asset list digest `150b5855…`, pins
    the counts, refuses a mismatch by exit status, and is reproducible
    byte-for-byte (two runs, one digest); `PROVENANCE.md` carries the rows.
-   *Tree: debt.*
+   *Tree: met — two runs write sha-256 `6440584b…`; a perturbed asset
+   directory exits 1.*
 4. **The body table.** `crates/dsl/data/entity-slots-1.21.11.json` has one
    row per living entity type in the pinned registry — 92 rows, denominator
    157, each naming its renderer class — and a test asserts the group counts
    of §4.1 (16 humanoid six; 5 + 2 head item without armour; 4 main hand
    only; 2 both hands only; 5 body and saddle; 6 saddle only; 4 body only; 48
    nothing) and the per-slot counts (`mainhand` 29, `offhand` 23, `head` 23,
-   `chest`/`legs`/`feet` 16, `saddle` 11, `body` 9). *Tree: debt — no such
-   file.*
+   `chest`/`legs`/`feet` 16, `saddle` 11, `body` 9). *Tree: met —
+   `equipment_tables.rs::the_body_table_has_a_row_per_living_entity_type_in_the_stated_groups`.*
 5. **The table's data cross-checks.** Three tests: the saddle rows equal
    `#minecraft:can_equip_saddle` from the vendored tag file; the body rows
    contain the union of the item allowed lists and the excess is exactly
    `[minecraft:skeleton_horse]`; the body/saddle layer types named by the rows
-   equal the 16 such types in the pinned equipment assets. Each prints its
-   binding with denominator. *Tree: debt.*
+   equal the 15 such types in the pinned equipment assets. Each prints its
+   binding with denominator. *Tree: met — `equipment_tables.rs`, three
+   tests.*
 6. **The surface.** `delvec schema --stage all` exports `body` and `saddle`
    on `MobEquipment` and the two variants on `EquipSlot`, under the
-   `dsl_version` the implementing round is handed. *Tree: debt.*
+   `dsl_version` the implementing round is handed. *Tree: met — 0.28.0.*
 7. **Emission.** A test dresses a horse actor in armour and saddle and asserts
    the summon NBT carries `equipment:{body:{…},saddle:{…}}` and
    `drop_chances` with `body:0.0f,saddle:0.0f`; the generated gear PackTest
    for that campaign asserts both keys on the live body; two builds are
-   byte-identical (ADR-0006). *Tree: debt.*
+   byte-identical (ADR-0006). *Tree: met —
+   `emit.rs::a_barded_and_saddled_horse_carries_body_and_saddle_keys`; the
+   gallery's `v06_actor_equipment_minecraft_horse` PackTest asserts both keys
+   on the puppet and the twin, and runs live on the PackTest tier.*
 8. **Fit, shape 1.** A test declares `minecraft:iron_chestplate` in `chest`
    on a `minecraft:horse` and asserts the new code naming the slots a horse
    shows (`body`, `saddle`); `minecraft:iron_sword` in `main_hand` on a
    `minecraft:creeper` is refused naming no shown slot; `minecraft:iron_helmet`
    in `head` on a `minecraft:villager` is refused (head armour) while
    `minecraft:carved_pumpkin` in `head` on the same villager is green; an
-   `equipment` on a non-living entity is refused on every slot. *Tree: debt —
-   the code is on no ref.*
+   `equipment` on a non-living entity is refused on every slot. *Tree: met —
+   `equipment_fit.rs::a_body_that_does_not_draw_the_slot_is_refused`.*
 9. **Fit, shape 2.** A test declares `minecraft:diamond_helmet` in `legs` on
    a zombie and asserts the new code naming `head`; the same helmet in
-   `main_hand` is green. *Tree: debt.*
+   `main_hand` is green. *Tree: met —
+   `equipment_fit.rs::an_item_in_a_slot_it_does_not_declare_is_refused`.*
 10. **Fit, shape 3.** A test declares `minecraft:saddle` on a
     `minecraft:zombie` and asserts the new code naming both shapes 1 and 3
     and the eleven admitted types; `minecraft:iron_horse_armor` on a
     `minecraft:skeleton_horse` is refused by shape 3 alone; the same saddle
     on `minecraft:horse` is green; a skinned actor is judged as
-    `minecraft:mannequin`. *Tree: debt.*
+    `minecraft:mannequin`. *Tree: met —
+    `equipment_fit.rs::an_item_that_excludes_the_body_is_refused`.*
 11. **Fit, silence.** A test declares `minecraft:carved_pumpkin` in `head` on
     a zombie and `minecraft:stone` in `head` and asserts neither is refused.
-    *Tree: debt.*
+    *Tree: met — `equipment_fit.rs::an_undeclared_item_in_a_drawn_slot_is_silent`.*
 12. **The `DW0496` pair.** A test stages a burning `minecraft:zombie_horse`
     under open sky and asserts the prescription names roofing and not
     `equipment.head`; the same for a zombie and asserts it names both. *Tree:
-    debt — the prescription is a literal.*
+    met —
+    `daylight.rs::the_prescription_names_a_head_piece_only_for_a_body_that_shows_one`.*
 13. **Drops.** A test declares `{"slot": "saddle"}` on a `boss` horse that
     wears one and asserts the emitted drop chance on `saddle`; the same drop on
-    a horse without a saddle is `DW0490`. *Tree: debt.*
+    a horse without a saddle is `DW0490`. *Tree: met — the emission half in
+    `emit.rs::a_barded_and_saddled_horse_carries_body_and_saddle_keys`, the
+    `DW0490` half in `equipment_fit.rs::a_saddle_drop_needs_a_saddle`.*
 14. **The binding line.** Every build prints §5's line; the gallery primary
-    reports `K ≥ 2`, `F ≥ 1` and `A ≥ 1`. *Tree: debt.*
+    reports `K ≥ 2`, `F ≥ 1` and `A ≥ 1`. *Tree: met — the gallery primary
+    reads `K` 3, `F` 9, `A` 2; `equipment_fit.rs::the_binding_counts_what_the_rule_examined`
+    holds the line's shape and its zeroes.*
 15. **The gallery.** §6's horse builds green; perturbing the armour id moves
     the summon line; the probe is refused at `validate` with the new code;
     `tools/check-gallery-coverage.py` reports 0 units in neither state. *Tree:
-    debt — no gallery body wears `body` or `saddle`.*
+    met — `actor/destrier`; probe `a-chestplate-on-a-horse`.*
 16. **The ledger row for §7.1** exists in `docs/playtest-findings.json` with a
     binding computed over the bodies whose entity falls back to the default
-    box. *Tree: not yet due.*
+    box. *Tree: debt — a row with no carrier is `NO-GENERAL-FORM` on every
+    campaign `tools/staging-gate.py` judges, the gallery included, so the row
+    reds `tools/check-gallery-stageable.py` on the tree that lands it; it is
+    held with the ledger's other open capability rows until a carrier for the
+    mounts' footprint exists.*
 17. **The record and the skill.** The rows and pages of §6, in the pull
-    request that lands the code. *Tree: debt.*
-18. A demo-level row is queued when the code lands. *Tree: not yet due.*
+    request that lands the code. *Tree: met for the record; the skill page
+    carries the rows and names `DW0898`, which `tools/check-skill-page.py`
+    refuses while the page's engine pin is a release that does not declare the
+    code — a debt until the page re-pins to a release carrying it.*
+18. A demo-level row is queued when the code lands. *Tree: met — The Stable
+    Yard.*
 
 ## 9. Decisions for the owner
 
