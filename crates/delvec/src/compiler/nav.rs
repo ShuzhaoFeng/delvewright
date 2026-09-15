@@ -2192,7 +2192,7 @@ impl World {
 
     /// Footprint-aware nearest-standable snap (spec-0014), used by `move-actor`
     /// endpoint resolution so a wide/tall puppet snaps to a cell IT can stand on.
-    fn snap_standable_fp(&self, c: [i32; 3], radius: i32, fp: &Footprint) -> Option<[i32; 3]> {
+    pub fn snap_standable_fp(&self, c: [i32; 3], radius: i32, fp: &Footprint) -> Option<[i32; 3]> {
         if self.standable_fp(c, fp) {
             return Some(c);
         }

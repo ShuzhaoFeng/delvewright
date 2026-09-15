@@ -4353,16 +4353,33 @@ fn build_critical_path(
                                             != (a.as_str(), pos)
                                     {
                                         let hp = delvewright_dsl::offset_cell(hp, staged.offset);
-                                        return Err(PlanError::new(
-                                            crate::compiler::cast::DW_CAST_PLACEMENT,
+                                        let ledger_mark = delvewright_dsl::Mark {
+                                            anchor: delvewright_dsl::AnchorId(anchor.to_string()),
+                                            offset: ledger_offset,
+                                        };
+                                        // Two different marks are the document
+                                        // arm's finding, in its words; two equal
+                                        // marks at two places are the split.
+                                        let message = if ledger_mark != staged.mark() {
+                                            crate::compiler::cast::placement_contradiction(
+                                                qid,
+                                                npc.as_str(),
+                                                &ledger_mark.display(),
+                                                &staged.mark().display(),
+                                            )
+                                        } else {
                                             crate::compiler::cast::station_split(
                                                 qid,
                                                 npc.as_str(),
-                                                anchor,
-                                                staged.anchor.as_str(),
+                                                &ledger_mark.display(),
+                                                &staged.mark().display(),
                                                 (a.as_str(), pos),
                                                 (ha, hp),
-                                            ),
+                                            )
+                                        };
+                                        return Err(PlanError::new(
+                                            crate::compiler::cast::DW_CAST_PLACEMENT,
+                                            message,
                                         ));
                                     }
                                     (a, pos)

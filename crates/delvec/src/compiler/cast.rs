@@ -1054,7 +1054,7 @@ fn check_placement_position(
 /// ([`check_stations`]), which asks whether the two names denote the same cell
 /// of the same building. A second copy of this sentence is how one code starts
 /// saying two things.
-fn placement_contradiction(qid: &str, npc: &str, declared: &str, actual: &str) -> String {
+pub fn placement_contradiction(qid: &str, npc: &str, declared: &str, actual: &str) -> String {
     format!(
         "quest `{qid}` declares npc `{npc}` at `{declared}`, but the effect history leaves them \
          at `{actual}` when this quest opens — nothing walks them across. Declaring an anchor \
