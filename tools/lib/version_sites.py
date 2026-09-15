@@ -268,6 +268,7 @@ GENERATED_JSON_ROOTS: dict[str, str] = {
 # the number moves on.
 COUNTEREXAMPLES: dict[str, dict[str, object]] = {}
 
+
 def files_named() -> list[str]:
     """Every file this module names — each row's, and each counter-example's.
 

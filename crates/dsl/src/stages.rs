@@ -820,12 +820,24 @@ impl<'a> BodyRef<'a> {
     }
 
     /// The entity id written on the body. **Not necessarily the body that
-    /// ships**: a `skin` re-dresses it as a `minecraft:mannequin`, which is the
-    /// compiler's rule (`nav::npc_body_entity`) and stays there.
+    /// ships**: a `skin` re-dresses it as a `minecraft:mannequin` — see
+    /// [`Self::worn_entity`].
     pub fn declared_entity(self) -> &'a str {
         match self {
             BodyRef::Npc(n) => n.base_entity.as_str(),
             BodyRef::Actor(a) => a.entity.as_str(),
+        }
+    }
+
+    /// **The entity id the body ships as**: `minecraft:mannequin` when it
+    /// declares a `skin`, else the declared entity. The one authority for that
+    /// rule — the compiler's geometric proofs (`nav::npc_body_entity`,
+    /// `nav::actor_body_entity`) and the equipment fit rule (`DW0898`) all read
+    /// it.
+    pub fn worn_entity(self) -> &'a str {
+        match self.skin() {
+            Some(_) => "minecraft:mannequin",
+            None => self.declared_entity(),
         }
     }
 
@@ -3143,20 +3155,27 @@ pub struct MobEquipment {
     /// Off-hand slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub off_hand: Option<EquipItem>,
+    /// Body slot: horse armour, wolf armour, a llama's carpet, a nautilus's
+    /// armour, a happy ghast's harness (spec-0067). Shown only on a body whose
+    /// entity type draws it (`DW0898`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<EquipItem>,
+    /// Saddle slot (spec-0067). Shown only on a body whose entity type draws a
+    /// saddle (`DW0898`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saddle: Option<EquipItem>,
 }
 
 impl MobEquipment {
-    /// Every slot as `(dsl_field_name, piece)`, in the fixed schema order —
+    /// Every slot as `(dsl_field_name, piece)`, in [`EquipSlot::ALL`]'s order —
     /// the single iteration source for validation paths and emission.
-    pub fn slots(&self) -> [(&'static str, Option<&EquipItem>); 6] {
-        [
-            ("head", self.head.as_ref()),
-            ("chest", self.chest.as_ref()),
-            ("legs", self.legs.as_ref()),
-            ("feet", self.feet.as_ref()),
-            ("main_hand", self.main_hand.as_ref()),
-            ("off_hand", self.off_hand.as_ref()),
-        ]
+    pub fn slots(&self) -> [(&'static str, Option<&EquipItem>); EquipSlot::ALL.len()] {
+        EquipSlot::ALL.map(|s| (s.field(), self.filled(s)))
+    }
+
+    /// Every slot as `(slot, piece)`, in [`EquipSlot::ALL`]'s order.
+    pub fn pieces(&self) -> [(EquipSlot, Option<&EquipItem>); EquipSlot::ALL.len()] {
+        EquipSlot::ALL.map(|s| (s, self.filled(s)))
     }
 
     /// The piece this equipment declaration puts in `slot`, if any. The single
@@ -3170,13 +3189,24 @@ impl MobEquipment {
             EquipSlot::Feet => self.feet.as_ref(),
             EquipSlot::MainHand => self.main_hand.as_ref(),
             EquipSlot::OffHand => self.off_hand.as_ref(),
+            EquipSlot::Body => self.body.as_ref(),
+            EquipSlot::Saddle => self.saddle.as_ref(),
         }
     }
 }
 
 /// One vanilla equipment slot, named exactly as the [`MobEquipment`] field that
-/// fills it (DSL v0.9). The DSL name and the summon-NBT key differ
-/// (`main_hand` vs `mainhand`), so both live here and nowhere else.
+/// fills it. The DSL name and the summon-NBT key differ (`main_hand` vs
+/// `mainhand`), so both live here and nowhere else.
+///
+/// **The set is the pinned game's equipment-slot set** (spec-0067 §2), a
+/// [`crate::metrics::Provenance::VanillaRule`]: the eight values the
+/// `minecraft:equippable` component's `slot` field takes, per the Minecraft
+/// Wiki page *Data component format/equippable* for Java 1.21.11, which are the
+/// serialised names of the client's `EquipmentSlot` enum. The pinned item data
+/// is the cross-check, not the source: every `slot` value an item declares is
+/// asserted to be one of these, and no item declares `mainhand`, because a hand
+/// takes anything.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -3194,9 +3224,28 @@ pub enum EquipSlot {
     MainHand,
     /// Off-hand slot.
     OffHand,
+    /// Body slot (horse armour, wolf armour, carpet, harness).
+    Body,
+    /// Saddle slot.
+    Saddle,
 }
 
 impl EquipSlot {
+    /// Every slot, in emission order: the two hands, the four armour slots,
+    /// then `body` and `saddle`. The one enumeration every slot list derives
+    /// from — `MobEquipment::slots()`, the summon `equipment` / `drop_chances`
+    /// compounds and the drop-strip line.
+    pub const ALL: [EquipSlot; 8] = [
+        EquipSlot::MainHand,
+        EquipSlot::OffHand,
+        EquipSlot::Head,
+        EquipSlot::Chest,
+        EquipSlot::Legs,
+        EquipSlot::Feet,
+        EquipSlot::Body,
+        EquipSlot::Saddle,
+    ];
+
     /// The DSL field name (`main_hand`), for diagnostics and JSON pointers.
     pub fn field(self) -> &'static str {
         match self {
@@ -3206,10 +3255,13 @@ impl EquipSlot {
             EquipSlot::Feet => "feet",
             EquipSlot::MainHand => "main_hand",
             EquipSlot::OffHand => "off_hand",
+            EquipSlot::Body => "body",
+            EquipSlot::Saddle => "saddle",
         }
     }
 
-    /// The 1.21.11 `equipment` / `drop_chances` NBT key (`mainhand`).
+    /// The 1.21.11 `equipment` / `drop_chances` NBT key (`mainhand`) — also the
+    /// game's own name for the slot, as an `equippable` component spells it.
     pub fn nbt(self) -> &'static str {
         match self {
             EquipSlot::Head => "head",
@@ -3218,7 +3270,20 @@ impl EquipSlot {
             EquipSlot::Feet => "feet",
             EquipSlot::MainHand => "mainhand",
             EquipSlot::OffHand => "offhand",
+            EquipSlot::Body => "body",
+            EquipSlot::Saddle => "saddle",
         }
+    }
+
+    /// The slot the game names `name` (`mainhand`), if it is one.
+    pub fn from_nbt(name: &str) -> Option<EquipSlot> {
+        EquipSlot::ALL.into_iter().find(|s| s.nbt() == name)
+    }
+
+    /// Whether this is a hand: a hand takes any item, so an item's own declared
+    /// slot never contradicts it.
+    pub fn is_hand(self) -> bool {
+        matches!(self, EquipSlot::MainHand | EquipSlot::OffHand)
     }
 }
 

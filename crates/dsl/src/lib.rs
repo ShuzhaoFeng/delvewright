@@ -24,6 +24,7 @@ pub mod detailplan;
 pub mod diagnostic;
 pub mod effects;
 pub mod envelope;
+pub mod equipment;
 /// **What a cell does when there is fluid beside it** — block knowledge, so it
 /// lives beside [`blocks`] and [`blockshape`] rather than beside any one reader
 /// of it. `delvewright_schem::fluid` re-exports it, and the prefab generators
@@ -61,6 +62,7 @@ pub use effects::{
 pub use envelope::{
     Campaign, DSL_VERSION, Envelope, RawCampaign, Stage, check_campaign, parse_campaign,
 };
+pub use equipment::{EquipmentBinding, Equippable, EquippableFact, PieceKind};
 pub use gate::{Gate, GateBinding, GateConsumer, GateSite, for_each_gate};
 pub use ids::{
     ActorId, AmbushId, AnchorId, AreaId, BranchId, BranchPointId, CampaignId, ClassId, DatumId,

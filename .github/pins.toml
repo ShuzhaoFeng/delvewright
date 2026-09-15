@@ -363,9 +363,13 @@ that does not answer it, and `validation/chunky.sh` renders with nothing else.
 [[pin]]
 id = "mcmeta-commit"
 value = "c976eb3b2cfcb9f205171527dec46b266afa3ac9"
-sites = ["tools/extract-block-defaults.py", "tools/extract-block-registry.py"]
+sites = [
+    "tools/extract-block-defaults.py",
+    "tools/extract-block-registry.py",
+    "tools/extract-item-equippable.py",
+]
 policy = "immutable"
-why = "The misode/mcmeta commit the pinned block summaries were retrieved from."
+why = "The misode/mcmeta commit the pinned block summaries and item components were retrieved from."
 
 [[pin]]
 id = "mcmeta-blocks"
@@ -379,10 +383,25 @@ id = "mcmeta-item-components"
 value = "51b191e13f86813ca02f1498942e5bc235947edb71eb8105a78401670b3665c4"
 sites = [
     "tools/extract-item-combat-stats.py",
+    "tools/extract-item-equippable.py",
     "tools/extract-item-stack-sizes.py",
 ]
 policy = "immutable"
 why = "sha256 of the mcmeta `item_components/data.min.json`."
+
+[[pin]]
+id = "mcmeta-assets-commit"
+value = "c5b876288e0df01b5cd5798434b066ab97eff88c"
+sites = ["tools/extract-item-equippable.py"]
+policy = "immutable"
+why = "The misode/mcmeta `1.21.11-assets` commit the pinned client's equipment assets were retrieved from."
+
+[[pin]]
+id = "mcmeta-equipment-assets"
+value = "150b585538e2295db9daee16e3fce4c23ac5bcdddc85358208b8e7adadbf78bb"
+sites = ["tools/extract-item-equippable.py"]
+policy = "immutable"
+why = "sha256 of the sorted `sha256sum` listing of the 44 files under the pinned `assets/minecraft/equipment/`."
 
 [[pin]]
 id = "mcmeta-damage-types"

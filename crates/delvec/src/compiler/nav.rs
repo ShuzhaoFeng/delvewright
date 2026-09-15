@@ -638,19 +638,13 @@ pub const BARRIER_HEIGHT: f64 = 1.5;
 /// proof about NPC bodies ([`crate::compiler::eclipse`], [`crate::compiler::clearance`]) must model
 /// what ships, not what is declared. One helper, so the two cannot drift.
 pub fn npc_body_entity(n: &delvewright_dsl::Npc) -> String {
-    match &n.skin {
-        Some(_) => "minecraft:mannequin".to_string(),
-        None => n.base_entity.clone(),
-    }
+    delvewright_dsl::BodyRef::Npc(n).worn_entity().to_string()
 }
 
 /// The entity id whose body a stage-5 actor wears — the actor's counterpart of
 /// [`npc_body_entity`], same mannequin rule.
 pub fn actor_body_entity(a: &delvewright_dsl::Actor) -> String {
-    match &a.skin {
-        Some(_) => "minecraft:mannequin".to_string(),
-        None => a.entity.clone(),
-    }
+    delvewright_dsl::BodyRef::Actor(a).worn_entity().to_string()
 }
 
 /// The hitbox footprint for a vanilla entity id (spec-0014 per-entity dims table).

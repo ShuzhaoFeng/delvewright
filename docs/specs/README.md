@@ -74,3 +74,4 @@ machine-checkable assertions — each criterion maps to a CI check.
 | [spec-0064](spec-0064-the-last-player-leaves.md) | The last player leaves, and the delve is built again — an optional container flag that returns a running delve to its built state once the online count has read zero for a whole window | Accepted |
 | [spec-0065](spec-0065-furniture-is-not-floor.md) | Furniture is not floor — a piece declares its furniture as a named place, and the walk model never proves a body onto it | Accepted |
 | [spec-0066](spec-0066-a-body-stands-at-an-offset.md) | A body stands at an offset — one mark type, anchor plus integer offset, for every place a body is put, walked to or recorded at | Accepted |
+| [spec-0067](spec-0067-every-slot-the-game-has.md) | Every slot the game has — the equipment block names the pinned game's eight slots, and a piece is refused where the game would not show it on that body | Accepted |
