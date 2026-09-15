@@ -1310,7 +1310,8 @@ never receives it, and Minecraft's FOV is vertical with *Normal* at 70
 
 **Chunky's `fov` is vertical, measured.** Two scenes of one camera on the
 pinned core `chunky-core-2.5.0-SNAPSHOT.474.g156e2bb` (run from its jar
-directly, so no other installed core is chosen), over the `cutscene-shots`
+directly, whose content digest `tools/lib/chunky_core.py digest` reads as
+`[render] chunky_core_content_sha256`), over the `cutscene-shots`
 fixture's world save: `pos` [5.5, 72, −12], yaw 0, pitch 20, `fov` 40, 64 spp,
 one at 400×200 and one at 400×400. If `fov` is vertical, the square frame is the
 wide frame's middle 200 columns at twice the scale; if horizontal, the wide
