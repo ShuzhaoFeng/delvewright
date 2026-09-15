@@ -766,7 +766,7 @@ mod tests {
         assert!(
             tree.validate_line(&mac).is_ok(),
             "{}",
-            message_chars(&[mac.clone()])
+            message_chars(std::slice::from_ref(&mac))
         );
         let mac_over = format!("$say {} $(tail)", "z".repeat(MESSAGE_MAX_CHARS + 1));
         assert!(tree.validate_line(&mac_over).is_err());
