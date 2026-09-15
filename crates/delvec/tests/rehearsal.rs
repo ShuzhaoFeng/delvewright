@@ -611,3 +611,67 @@ fn the_camera_stamp_is_the_eye_in_fixed_point() {
         "{back}"
     );
 }
+
+/// **A roster is one chat message per shot, and reads back as built.** A chat
+/// message holds at most 256 characters and a parse failure drops the whole
+/// function at load, so a campaign with many shots once shipped a roster the
+/// server refused (`Chat message was too long (707 > maximum 256 characters)`).
+/// A sixteen-shot cutscene — a roster far over the bound as one line — emits
+/// lines of at most 256 characters the command tree accepts, and the log those
+/// lines write harvests back to exactly the roster `layout.json` states.
+#[test]
+fn a_long_roster_stamps_one_short_line_per_shot_and_harvests_back() {
+    let shots: Vec<String> = (0..16)
+        .map(|k| {
+            format!(
+                r#"{{ "path": [ {{ "anchor": "anchor/exit", "offset": [0, 2, {}] }} ], "seconds": 2 }}"#,
+                k % 3
+            )
+        })
+        .collect();
+    let cutscene = format!(
+        r#"{{ "type": "cutscene", "shots": [ {} ] }}"#,
+        shots.join(", ")
+    );
+    let (_, out) = build(&cutscene);
+    let roster = overlay(&out, "rehearsal/roster");
+    let says: Vec<&str> = roster
+        .lines()
+        .filter_map(|l| l.strip_prefix("say "))
+        .collect();
+    assert_eq!(says.len(), 17, "a count and one line per shot:\n{roster}");
+    let one_line: usize = says.iter().map(|s| s.chars().count() + 1).sum();
+    assert!(
+        one_line > 256,
+        "the roster as one message would be {one_line} characters"
+    );
+    let tree = CommandTree::v1_21_11();
+    for say in &says {
+        assert!(say.chars().count() <= 256, "{say}");
+    }
+    assert!(tree.validate_function(&roster).is_empty(), "{roster}");
+    // The same roster as ONE message is what the command tree refuses.
+    let joined = format!("say {}", says.join(" "));
+    let err = tree.validate_line(&joined).unwrap_err();
+    assert!(err.reason.contains("chat message"), "{err:?}");
+
+    let log: String = says
+        .iter()
+        .map(|s| format!("[06:12:44] [Server thread/INFO]: [Not Secure] [delve-creator] {s}\n"))
+        .collect();
+    let harvested = delvec::orchestrator::rehearsal::harvest_roster(&log);
+    let built: Vec<(u32, String, u32)> = layout(&out)["shots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["shot"].as_u64().unwrap() as u32,
+                s["pointer"].as_str().unwrap().to_string(),
+                s["shot_index"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect();
+    assert_eq!(built.len(), 16);
+    assert_eq!(harvested, built);
+}

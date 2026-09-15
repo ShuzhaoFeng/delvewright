@@ -57,6 +57,20 @@ pub struct Layout {
     /// Objectives, carrying the `objective → quest` binding.
     #[serde(default)]
     pub objectives: Vec<ObjectiveEntry>,
+    /// The rehearsal shot roster the overlay was built with (spec-0019).
+    #[serde(default)]
+    pub shots: Vec<ShotEntry>,
+}
+
+/// One rehearsable shot's layout entry.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ShotEntry {
+    /// 1-based shot id.
+    pub shot: u32,
+    /// JSON pointer to the `cutscene` effect.
+    pub pointer: String,
+    /// The shot's 0-based index within that effect.
+    pub shot_index: u32,
 }
 
 /// One area's layout entry.

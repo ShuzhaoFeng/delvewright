@@ -26,7 +26,7 @@ use std::process::ExitCode;
 use clap::Args;
 
 use crate::orchestrator::camera::{camera_json, harvest_cameras};
-use crate::orchestrator::rehearsal::{harvest_rehearsal, rehearsal_json};
+use crate::orchestrator::rehearsal::{harvest_rehearsal, harvest_roster, rehearsal_json};
 use crate::orchestrator::{Layout, harvest, report_json};
 
 /// `delvec harvest`: the command line, as a type.
@@ -98,6 +98,32 @@ pub fn run(cli: HarvestArgs) -> ExitCode {
             rehearsal.shots.len(),
             cli.rehearsal_out
         );
+    }
+    // spec-0019: the roster the log carries is the roster the layout was built
+    // with, or the log and the layout are two different builds.
+    let roster = harvest_roster(&log);
+    if !roster.is_empty() {
+        let built: Vec<(u32, String, u32)> = layout
+            .shots
+            .iter()
+            .map(|s| (s.shot, s.pointer.clone(), s.shot_index))
+            .collect();
+        if roster == built {
+            eprintln!(
+                "shot roster: {} shot(s) in the log, the roster {} was built with",
+                roster.len(),
+                cli.manifest.display()
+            );
+        } else {
+            eprintln!(
+                "warning: the log's shot roster ({} shot(s)) is not the roster {} was built with \
+                 ({} shot(s)): the server ran another build, so a shot id in this log may name \
+                 another shot",
+                roster.len(),
+                cli.manifest.display(),
+                built.len()
+            );
+        }
     }
     // spec-0069: the camera poses the creator stamped with `dw.cam`. Silent when
     // the session stamped none.

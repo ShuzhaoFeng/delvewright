@@ -127,7 +127,16 @@ Methodology; CI enforces the DW-code subset — see `tools/check-dw-codes.py`).
   were read off the pinned server rather than a wiki. Judged only where all four
   coordinates are plain integers, so a relative coordinate is left to the server
   like every other value. The emission side is under **forceload lifecycle**
-  below. `delvec prefab`'s gallery is the
+  below.
+  **A chat message's length** is a parse bound, and the walk applies it: a
+  `minecraft:message` argument (`say`, `me`, `msg`, `teammsg`) holds at most
+  `MESSAGE_MAX_CHARS` (256) characters, counted as the server counts them, and a
+  longer one makes 1.21.11 refuse the WHOLE function at load — "Chat message was
+  too long (707 > maximum 256 characters)", measured on the creator overlay's
+  shot roster the first time a PackTest server loaded it. The line is refused
+  naming its length. A macro line is judged on its literal text with each
+  `$(name)` counted as nothing: a floor, which a substituted value can still
+  carry past the bound at run time. `delvec prefab`'s gallery is the
   second consumer of this validator: it emits `.mcfunction` into a datapack
   exactly as `delvec` does, so it now runs the same tree over its own output
   before writing anything (`gallery::validate_functions`, `DW0760`) rather than
@@ -7180,9 +7189,13 @@ campaign scoreboard — which is what lets adjust-and-replay cycle with no reloa
 | `/trigger dw.faster set <s>` / `dw.slower set <s>` | Scale `seconds` by ∓20 % with a floor of one whole second, clamped to 2..30. The one-second floor is why the step is `max(1, 20 %)`: plain integer scaling leaves a 2 s shot at its fixpoint forever. |
 | `/trigger dw.done` | The single harvest — one `[DelveShot]` line per shot. |
 
-The overlay also `say`-stamps a one-line `[DelveShotRoster]` the first time each
-player joins, mapping shot ids to their JSON pointers; without it the creator
-has no way to know what `dw.mark set 3` addresses.
+The overlay also `say`-stamps the `[DelveShotRoster]` the first time each
+player joins — `shots=<n>`, then one line `<id>=<pointer>#<index>` per shot, so no
+line reaches the 256-character chat bound whatever the campaign's shot count —
+mapping shot ids to their JSON pointers; without it the creator has no way to
+know what `dw.mark set 3` addresses. `delvec harvest` reads the roster back
+(`orchestrator::rehearsal::harvest_roster`) and says whether it is the roster
+`layout.json` states, warning when the log came from another build.
 
 **A `trigger` objective is armed by its score entry, so `scoreboard players
 reset` disarms it.** Vanilla stores "this player may `/trigger` this objective"

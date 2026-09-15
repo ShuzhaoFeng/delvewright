@@ -761,21 +761,22 @@ fn rehearsal_fns(ns: &str, inv: &Inventory) -> Vec<(String, String)> {
     ));
 
     // --- roster ------------------------------------------------------------
-    // One line, compile-time constant: which id names which shot. Without it the
-    // creator has no way to know what `dw.mark set 3` addresses.
-    let roster: String = inv
-        .shots
-        .iter()
-        .map(|s| format!("{}={}#{}", s.id, s.pointer, s.shot_index))
-        .collect::<Vec<_>>()
-        .join(" ");
-    fns.push((
-        f("roster"),
-        lines(&[
-            format!("tag @s add {RH_ROSTER}"),
-            format!("say [DelveShotRoster] shots={n} {roster}"),
-        ]),
-    ));
+    // Compile-time constant: which id names which shot. Without it the creator
+    // has no way to know what `dw.mark set 3` addresses. One `say` per shot,
+    // after a count: a chat message holds at most 256 characters, and a roster
+    // is as long as the campaign has shots (the command-tree check refuses a
+    // longer message, `commands::MESSAGE_MAX_CHARS`).
+    let mut roster = vec![
+        format!("tag @s add {RH_ROSTER}"),
+        format!("say [DelveShotRoster] shots={n}"),
+    ];
+    roster.extend(inv.shots.iter().map(|s| {
+        format!(
+            "say [DelveShotRoster] {}={}#{}",
+            s.id, s.pointer, s.shot_index
+        )
+    }));
+    fns.push((f("roster"), lines(&roster)));
 
     // --- dw.mark -----------------------------------------------------------
     fns.push((
