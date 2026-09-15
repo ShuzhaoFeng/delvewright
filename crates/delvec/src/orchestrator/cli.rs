@@ -15,12 +15,17 @@
 //! playtest report. It is written only when the session actually stamped a
 //! proposal, so a plain note-taking playtest produces exactly the artifact it
 //! did before.
+//!
+//! And spec-0069 `[DelveCamera]` stamps (`/trigger dw.cam set <n>`) into a
+//! versioned `camera-report.json`, written only when the log carries one:
+//! the poses `delvec place-camera` writes into `design/cameras.json`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Args;
 
+use crate::orchestrator::camera::{camera_json, harvest_cameras};
 use crate::orchestrator::rehearsal::{harvest_rehearsal, rehearsal_json};
 use crate::orchestrator::{Layout, harvest, report_json};
 
@@ -38,6 +43,10 @@ pub struct HarvestArgs {
     /// carries at least one `[DelveShot]` stamp (`-` for stdout).
     #[arg(long, default_value = "rehearsal-report.json")]
     pub rehearsal_out: String,
+    /// Where to write the spec-0069 camera report. Written only when the log
+    /// carries at least one `[DelveCamera]` stamp (`-` for stdout).
+    #[arg(long, default_value = "camera-report.json")]
+    pub camera_out: String,
 }
 
 /// Run `delvec harvest`.
@@ -88,6 +97,24 @@ pub fn run(cli: HarvestArgs) -> ExitCode {
             "harvested {} shot proposal(s) into {}",
             rehearsal.shots.len(),
             cli.rehearsal_out
+        );
+    }
+    // spec-0069: the camera poses the creator stamped with `dw.cam`. Silent when
+    // the session stamped none.
+    let cameras = harvest_cameras(&log, &layout.campaign_id);
+    if !cameras.cameras.is_empty() {
+        let json = camera_json(&cameras);
+        if cli.camera_out == "-" {
+            print!("{json}");
+        } else if let Err(e) = std::fs::write(&cli.camera_out, &json) {
+            eprintln!("cannot write camera report {}: {e}", cli.camera_out);
+            return ExitCode::from(10);
+        }
+        eprintln!(
+            "harvested {} camera slot(s) from {} stamp(s) into {}",
+            cameras.cameras.len(),
+            cameras.cameras.iter().map(|c| c.stamps).sum::<u32>(),
+            cli.camera_out
         );
     }
 

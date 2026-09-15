@@ -31,6 +31,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub mod camera;
 pub mod cli;
 pub mod rehearsal;
 
