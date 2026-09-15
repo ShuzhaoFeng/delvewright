@@ -266,40 +266,8 @@ GENERATED_JSON_ROOTS: dict[str, str] = {
 # an entry is never a licence for the whole file. A statement the file no longer
 # contains is reported, which is how an entry keyed to a number is retired when
 # the number moves on.
-COUNTEREXAMPLES: dict[str, dict[str, object]] = {
-    "versions.toml": {
-        "statements": ['deepslate_version = "{v}"'],
-        "reason": "the vendored viewer library's own release number (ADR-0021), which equals this one by coincidence",
-    },
-    "tools/build-deepslate-bundle.sh": {
-        "statements": ["deepslate {v} asks", 'DEEPSLATE_VERSION="{v}"'],
-        "reason": "the vendored viewer library's own release number (ADR-0021), which equals this one by coincidence",
-    },
-    "crates/delvec/src/compiler/view/viewer.rs": {
-        "statements": ["deepslate {v} asks"],
-        "reason": "the vendored viewer library's own release number (ADR-0021), which equals this one by coincidence",
-    },
-    "docs/ACKNOWLEDGEMENTS.md": {
-        "statements": ["`deepslate` {v}"],
-        "reason": "the vendored viewer library's own release number, recorded with its licence",
-    },
-    "docs/adr/0021-creator-toolchain-rederived.md": {
-        "statements": ["npm {v} published"],
-        "reason": "an Accepted ADR citing the viewer library's release; an Accepted decision is never edited",
-    },
-    "docs/adr/0028-three-things-released-by-name.md": {
-        "statements": ["`delvewright-dsl--v{v}`", "`delvewright-dsl {v}`"],
-        "reason": "an Accepted ADR's worked example of a tag's shape; an Accepted decision is never edited",
-    },
-    "tools/lib/release_tags.py": {
-        "statements": ["delvewright-dsl--v{v}  the format crate"],
-        "reason": "a worked example of the tag shape this module parses, not the crate's number",
-    },
-    "tools/tests/test_release_tags.py": {
-        "statements": ['("delvewright-dsl--v{v}", "delvewright-dsl", "{v}")', '"delvewright-dsl--v{v}",\n', 'previous("delvewright-dsl--v{v}", tags)'],
-        "reason": "test vectors for the tag parser, which are examples of the shape and not the crate's number",
-    },
-}
+COUNTEREXAMPLES: dict[str, dict[str, object]] = {}
+
 
 def files_named() -> list[str]:
     """Every file this module names — each row's, and each counter-example's.

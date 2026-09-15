@@ -1113,18 +1113,18 @@ fn objectives(plan: &Plan) -> Vec<(String, String)> {
 /// for the layout manifest. Mirrors the main emitter's NPC placement.
 fn npc_pos(plan: &Plan, npc_id: &str) -> [i32; 3] {
     let area = plan.npc_area(npc_id).unwrap_or("");
-    let anchor = plan
+    let decl = plan
         .campaign
         .npcs
         .content
         .npcs
         .iter()
-        .find(|n| n.id.as_str() == npc_id)
-        .map(|n| n.anchor.as_str())
-        .unwrap_or("");
+        .find(|n| n.id.as_str() == npc_id);
+    let anchor = decl.map(|n| n.anchor.as_str()).unwrap_or("");
+    let offset = decl.map(|n| n.offset).unwrap_or([0, 0, 0]);
     match plan.anchors.get(&(area.to_string(), anchor.to_string())) {
-        Some(ResolvedAnchor::Point { pos, .. }) => *pos,
-        Some(ResolvedAnchor::Gate { from, .. }) => *from,
+        Some(ResolvedAnchor::Point { pos, .. }) => delvewright_dsl::offset_cell(*pos, offset),
+        Some(ResolvedAnchor::Gate { from, .. }) => delvewright_dsl::offset_cell(*from, offset),
         None => [0, plan::BASE_Y, 0],
     }
 }
