@@ -50,6 +50,32 @@
 //! `creator-datapack/layout.json`: `area → prefab` and the flat objective states →
 //! per-quest `quest_state`. Layout data therefore lives in one place (the overlay's
 //! `layout.json`) and is the harvester's only campaign input.
+//!
+//! ## A showcase camera placed by hand (spec-0069)
+//!
+//! Two more triggers, in every overlay:
+//!
+//! - **`dw.free`** leaves the body and comes back to it. The first fire records
+//!   where the player stands, which way they look and their game mode on a
+//!   marker at that spot (its chunk force-loaded unless something already forces
+//!   it), and puts them in spectator; the second puts the game mode back,
+//!   teleports them to the marker and removes it (and the force-load it added).
+//!   A datapack function runs at the server's function permission level (2 by
+//!   default), which `gamemode` and `forceload` need, so a player nobody opped
+//!   can fly.
+//! - **`dw.cam set <n>`** (`/trigger dw.cam` is slot 1) stamps the player's eye
+//!   and rotation into the log as fixed-point integers:
+//!
+//! ```text
+//! [DelveCamera] slot=<n> eye=<x_mb>,<y_mb>,<z_mb> yaw=<centi-degrees> pitch=<centi-degrees> in=<air|block>
+//! ```
+//!
+//!   The eye is `execute anchored eyes positioned ^ ^ ^`, read off a one-command
+//!   marker in milli-blocks, so it is the eye in any pose — standing, sneaking,
+//!   spectating inside a wall. The rotation is the entity's own `Rotation` in
+//!   centi-degrees, the camera record's convention. `in` says whether the eye's
+//!   cell held anything but air; it refuses nothing. `delvec harvest` divides
+//!   the integers back out into `camera-report.json`.
 
 use serde_json::json;
 
@@ -129,6 +155,7 @@ fn emit_functions(plan: &Plan, inv: &Inventory) -> Vec<(String, String)> {
     let mut init = vec![format!(
         "scoreboard objectives add {NOTE_OBJECTIVE} trigger"
     )];
+    init.extend(camera_init());
     init.extend(rehearsal_init(ns, inv));
     fns.push(("init".to_string(), lines(&init)));
 
@@ -139,6 +166,7 @@ fn emit_functions(plan: &Plan, inv: &Inventory) -> Vec<(String, String)> {
             "execute as @a[scores={{{NOTE_OBJECTIVE}=1..}}] at @s run function {ns}:creator/stamp"
         ),
     ];
+    tick.extend(camera_tick(ns));
     tick.extend(rehearsal_tick(ns, inv));
     fns.push(("tick".to_string(), lines(&tick)));
 
@@ -203,9 +231,199 @@ fn emit_functions(plan: &Plan, inv: &Inventory) -> Vec<(String, String)> {
     );
     fns.push(("emit".to_string(), lines(&[macro_line])));
 
+    fns.extend(camera_fns(ns));
     fns.extend(rehearsal_fns(ns, inv));
 
     fns.sort_by(|a, b| a.0.cmp(&b.0));
+    fns
+}
+
+// ---------------------------------------------------------------------------
+// A showcase camera placed by hand (spec-0069)
+// ---------------------------------------------------------------------------
+
+/// The trigger that stamps the player's eye and rotation (`/trigger dw.cam set <slot>`).
+pub const CAMERA_TRIGGER: &str = "dw.cam";
+/// The trigger that leaves the body and comes back to it.
+pub const FREE_TRIGGER: &str = "dw.free";
+/// Scratch registers for both handlers.
+const CAM_OBJ: &str = "dw.cm";
+/// A player's free-flight id, and the id of the marker holding their place.
+const FREE_ID: &str = "dw.fid";
+/// The game mode the player left (`playerGameType`), on their marker.
+const FREE_MODE: &str = "dw.fmode";
+/// `1` on a marker whose chunk this overlay force-loaded, so only that is undone.
+const FREE_LOADED: &str = "dw.fload";
+/// Tag on a player who is out of their body.
+const FREE_TAG: &str = "dw_free";
+/// Tag on the marker holding a player's place.
+const FREE_HOME: &str = "dw_free_home";
+/// Tag on the one marker a handler is working with.
+const FREE_THIS: &str = "dw_free_this";
+/// Tag on the one-command eye probe.
+const CAM_PROBE: &str = "dw_cam_probe";
+/// `playerGameType` → the `gamemode` that restores it.
+const GAME_MODES: [(i32, &str); 4] = [
+    (0, "survival"),
+    (1, "creative"),
+    (2, "adventure"),
+    (3, "spectator"),
+];
+
+fn camera_storage(ns: &str) -> String {
+    format!("{ns}:camera")
+}
+
+/// `creator/init` additions: the two triggers and their scratch objectives.
+fn camera_init() -> Vec<String> {
+    let mut out: Vec<String> = [CAMERA_TRIGGER, FREE_TRIGGER]
+        .iter()
+        .map(|t| format!("scoreboard objectives add {t} trigger"))
+        .collect();
+    for obj in [CAM_OBJ, FREE_ID, FREE_MODE, FREE_LOADED] {
+        out.push(format!("scoreboard objectives add {obj} dummy"));
+    }
+    out
+}
+
+/// `creator/tick` additions: arm both triggers for everyone and dispatch a fired
+/// one. Never a reset here — see [`rehearsal_tick`] for why a tick that resets a
+/// trigger it enables disarms it.
+fn camera_tick(ns: &str) -> Vec<String> {
+    vec![
+        format!("scoreboard players enable @a {CAMERA_TRIGGER}"),
+        format!("scoreboard players enable @a {FREE_TRIGGER}"),
+        format!(
+            "execute as @a[scores={{{CAMERA_TRIGGER}=1..}}] at @s run function {ns}:creator/camera/cam"
+        ),
+        format!(
+            "execute as @a[scores={{{FREE_TRIGGER}=1..}}] at @s run function {ns}:creator/camera/free"
+        ),
+    ]
+}
+
+/// Every `creator/camera/*` function, as `(local-name, body)`.
+fn camera_fns(ns: &str) -> Vec<(String, String)> {
+    let storage = camera_storage(ns);
+    let probe = format!("@e[type=minecraft:marker,tag={CAM_PROBE},limit=1]");
+    let this = format!("@e[type=minecraft:marker,tag={FREE_THIS},limit=1]");
+    let f = |name: &str| format!("camera/{name}");
+    let mut fns: Vec<(String, String)> = Vec::new();
+
+    // --- dw.cam: runs `as <player> at <player>` -----------------------------
+    let mut cam = vec![
+        format!("execute store result storage {storage} slot int 1 run scoreboard players get @s {CAMERA_TRIGGER}"),
+        format!("scoreboard players reset @s {CAMERA_TRIGGER}"),
+        format!("kill @e[type=minecraft:marker,tag={CAM_PROBE}]"),
+        format!(
+            "execute anchored eyes positioned ^ ^ ^ run summon minecraft:marker ~ ~ ~ {{Tags:[\"{CAM_PROBE}\"]}}"
+        ),
+    ];
+    for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+        cam.push(format!(
+            "execute store result storage {storage} {axis} int 1 run data get entity {probe} Pos[{i}] 1000"
+        ));
+    }
+    for (i, key) in ["yaw", "pitch"].iter().enumerate() {
+        cam.push(format!(
+            "execute store result storage {storage} {key} int 1 run data get entity @s Rotation[{i}] 100"
+        ));
+    }
+    cam.push(format!("data modify storage {storage} in set value \"air\""));
+    cam.push(format!(
+        "execute anchored eyes positioned ^ ^ ^ unless block ~ ~ ~ minecraft:air unless block ~ ~ ~ \
+         minecraft:cave_air unless block ~ ~ ~ minecraft:void_air run data modify storage {storage} in \
+         set value \"block\""
+    ));
+    cam.push(format!("kill @e[type=minecraft:marker,tag={CAM_PROBE}]"));
+    cam.push(format!("function {ns}:creator/camera/stamp with storage {storage}"));
+    fns.push((f("cam"), lines(&cam)));
+    fns.push((
+        f("stamp"),
+        lines(&[
+            "$say [DelveCamera] slot=$(slot) eye=$(x),$(y),$(z) yaw=$(yaw) pitch=$(pitch) in=$(in)"
+                .to_string(),
+        ]),
+    ));
+
+    // --- dw.free: runs `as <player> at <player>` ----------------------------
+    fns.push((
+        f("free"),
+        lines(&[
+            format!("scoreboard players reset @s {FREE_TRIGGER}"),
+            format!(
+                "execute unless score @s {FREE_ID} matches 1.. run function {ns}:creator/camera/free_id"
+            ),
+            format!("scoreboard players operation #fid {CAM_OBJ} = @s {FREE_ID}"),
+            format!("tag @e[type=minecraft:marker,tag={FREE_THIS}] remove {FREE_THIS}"),
+            // Every place marker carries its id from the summon on; seeding it
+            // here too keeps the comparison below a comparison between entries.
+            format!(
+                "scoreboard players add @e[type=minecraft:marker,tag={FREE_HOME}] {FREE_ID} 0"
+            ),
+            format!(
+                "execute as @e[type=minecraft:marker,tag={FREE_HOME}] if score @s {FREE_ID} = #fid {CAM_OBJ} run tag @s add {FREE_THIS}"
+            ),
+            // Read the state once, then branch: the two arms change what the
+            // test reads, so each is chosen before either runs.
+            format!("scoreboard players set #back {CAM_OBJ} 0"),
+            format!(
+                "execute if entity @s[tag={FREE_TAG}] if entity {this} run scoreboard players set #back {CAM_OBJ} 1"
+            ),
+            format!(
+                "execute if score #back {CAM_OBJ} matches 1 run function {ns}:creator/camera/free_back"
+            ),
+            format!(
+                "execute if score #back {CAM_OBJ} matches 0 run function {ns}:creator/camera/free_leave"
+            ),
+            format!("tag @e[type=minecraft:marker,tag={FREE_THIS}] remove {FREE_THIS}"),
+        ]),
+    ));
+    fns.push((
+        f("free_id"),
+        lines(&[
+            format!("scoreboard players add #next {CAM_OBJ} 1"),
+            format!("scoreboard players operation @s {FREE_ID} = #next {CAM_OBJ}"),
+        ]),
+    ));
+    // Leave: a stale place of this player's (a body that left twice without
+    // coming back) is dropped first, so one player holds one place.
+    let leave = vec![
+        format!("execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"),
+        format!("kill @e[type=minecraft:marker,tag={FREE_THIS}]"),
+        format!(
+            "summon minecraft:marker ~ ~ ~ {{Tags:[\"{FREE_HOME}\",\"{FREE_THIS}\"]}}"
+        ),
+        format!("tp {this} ~ ~ ~ ~ ~"),
+        format!("scoreboard players operation {this} {FREE_ID} = #fid {CAM_OBJ}"),
+        format!(
+            "execute store result score {this} {FREE_MODE} run data get entity @s playerGameType"
+        ),
+        format!("execute store success score #forced {CAM_OBJ} run forceload query ~ ~"),
+        format!("scoreboard players set {this} {FREE_LOADED} 0"),
+        format!(
+            "execute if score #forced {CAM_OBJ} matches 0 run scoreboard players set {this} {FREE_LOADED} 1"
+        ),
+        format!("execute if score #forced {CAM_OBJ} matches 0 run forceload add ~ ~"),
+        format!("tag @s add {FREE_TAG}"),
+        "gamemode spectator @s".to_string(),
+    ];
+    fns.push((f("free_leave"), lines(&leave)));
+    let mut back = vec![format!(
+        "execute store result score #mode {CAM_OBJ} run scoreboard players get {this} {FREE_MODE}"
+    )];
+    for (value, mode) in GAME_MODES {
+        back.push(format!(
+            "execute if score #mode {CAM_OBJ} matches {value} run gamemode {mode} @s"
+        ));
+    }
+    back.extend([
+        format!("tp @s {this}"),
+        format!("execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"),
+        format!("kill @e[type=minecraft:marker,tag={FREE_THIS}]"),
+        format!("tag @s remove {FREE_TAG}"),
+    ]);
+    fns.push((f("free_back"), lines(&back)));
     fns
 }
 
