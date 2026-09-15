@@ -435,6 +435,173 @@ fn camera_fns(ns: &str) -> Vec<(String, String)> {
     fns
 }
 
+/// Standing eye height, milli-blocks — the metrics table's figure, the number a
+/// test holds the overlay's `anchored eyes` read to.
+const STANDING_EYE_MB: i32 = (delvewright_dsl::metrics::PLAYER_EYE_HEIGHT * 1000.0) as i32;
+
+/// The height the camera templates stand their dummy at: above anything a
+/// campaign builds and below the build limit, so the eye's cell is air unless
+/// the template puts a block there.
+const CAMERA_TEST_Y: i32 = 300;
+
+/// The PackTest templates that prove the hand camera on a server (spec-0069
+/// criteria 2 and 3), as `(path, body)`. They drive the overlay's own handlers,
+/// so the server that runs them loads `creator-datapack/` beside the suite.
+///
+/// `column` is a block column the campaign's own setup force-loads (the corner
+/// of its first area). The templates stand there rather than at the test's own
+/// position: PackTest places a batch millions of blocks out, where a position in
+/// milli-blocks overflows a score and every horizontal reading saturates to the
+/// same number — a comparison that could not fail.
+///
+/// Each settles its dummy in open air for two ticks — a player's pose is
+/// recomputed on its tick, and the eye height follows the pose — and then does
+/// everything it asserts inside one tick, so no sibling in the batch can move
+/// the dummy between the stamp and the reading it is held to.
+pub fn packtests(ns: &str, title: &str, column: [i32; 2]) -> Vec<(String, String)> {
+    let [cx, cz] = column;
+    let at = |dx: f64, y: i32, dz: f64| {
+        format!(
+            "{} {y} {}",
+            f64::from(cx) + 0.5 + dx,
+            f64::from(cz) + 0.5 + dz
+        )
+    };
+    let storage = camera_storage(ns);
+    let path = |name: &str| format!("packtest-datapack/data/{ns}/test/{name}.mcfunction");
+    let y = CAMERA_TEST_Y;
+    // The eye, read back off the stamp's storage, against the dummy's own
+    // position plus the eye height: within one milli-block on every axis.
+    let eye_within = |tag: &str, eye_mb: i32| -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+            let (want, got) = (format!("#{tag}_w{axis}"), format!("#{tag}_g{axis}"));
+            out.push(format!(
+                "execute store result score {want} {CAM_OBJ} run data get entity @s Pos[{i}] 1000"
+            ));
+            if *axis == "y" {
+                out.push(format!("scoreboard players add {want} {CAM_OBJ} {eye_mb}"));
+            }
+            out.push(format!(
+                "execute store result score {got} {CAM_OBJ} run data get storage {storage} {axis}"
+            ));
+            out.push(format!(
+                "scoreboard players operation {got} {CAM_OBJ} -= {want} {CAM_OBJ}"
+            ));
+            out.push(format!("assert score {got} {CAM_OBJ} matches -1..1"));
+        }
+        out
+    };
+    // The slot, the rotation and the verdict the stamp substitutes, read off the
+    // storage its macro reads. PackTest's chat condition hears system messages
+    // only, and `say` is a chat message, so the log line itself is held by the
+    // live flow (`validation/rehearsal-flow.sh`).
+    let stamped = |tag: &str, snbt: &str| -> Vec<String> {
+        vec![
+            format!(
+                "execute store success score #{tag}_stamp {CAM_OBJ} if data storage {storage} {snbt}"
+            ),
+            format!("assert score #{tag}_stamp {CAM_OBJ} matches 1"),
+        ]
+    };
+    let fire = |slot: u32| -> Vec<String> {
+        vec![
+            format!("scoreboard players set @s {CAMERA_TRIGGER} {slot}"),
+            format!("execute at @s run function {ns}:creator/camera/cam"),
+        ]
+    };
+    let mut tests = Vec::new();
+
+    // --- standing, in open air ----------------------------------------------
+    let mut stand = vec![
+        format!(
+            "#> {title}: `/trigger dw.cam` stamps a standing player's eye and rotation (spec-0069)"
+        ),
+        "# @dummy".to_string(),
+        "# @timeout 100".to_string(),
+        String::new(),
+        "gamemode adventure @s".to_string(),
+        format!("tp @s {} 30 15", at(0.0, y, 0.0)),
+        "await delay 2t".to_string(),
+        "gamemode adventure @s".to_string(),
+        format!("tp @s {} 30 15", at(0.0, y, 0.0)),
+    ];
+    stand.extend(fire(1));
+    stand.extend(stamped("cst", "{slot:1,yaw:3000,pitch:1500,in:\"air\"}"));
+    stand.extend(eye_within("cst", STANDING_EYE_MB));
+    tests.push((path("creator_camera_standing"), lines(&stand)));
+
+    // --- spectating inside a solid block --------------------------------------
+    let eye_cell = y + 1;
+    let mut wall = vec![
+        format!(
+            "#> {title}: `/trigger dw.cam` stamps a spectator's eye inside a block, and refuses nothing (spec-0069)"
+        ),
+        "# @dummy".to_string(),
+        "# @timeout 100".to_string(),
+        String::new(),
+        "gamemode spectator @s".to_string(),
+        format!("tp @s {} -90 -30", at(0.0, y, 0.0)),
+        "await delay 2t".to_string(),
+        "gamemode spectator @s".to_string(),
+        format!("setblock {cx} {eye_cell} {cz} minecraft:stone"),
+        format!("tp @s {} -90 -30", at(0.0, y, 0.0)),
+    ];
+    wall.extend(fire(7));
+    wall.extend(stamped(
+        "cwl",
+        "{slot:7,yaw:-9000,pitch:-3000,in:\"block\"}",
+    ));
+    wall.extend(eye_within("cwl", STANDING_EYE_MB));
+    wall.push(format!("setblock {cx} {eye_cell} {cz} minecraft:air"));
+    wall.push("gamemode adventure @s".to_string());
+    tests.push((path("creator_camera_in_a_block"), lines(&wall)));
+
+    // --- dw.free: leave, fly, come back ---------------------------------------
+    let mut free = vec![
+        format!("#> {title}: `/trigger dw.free` leaves the body and returns to it (spec-0069)"),
+        "# @dummy".to_string(),
+        "# @timeout 100".to_string(),
+        String::new(),
+        "gamemode adventure @s".to_string(),
+        format!("tp @s {} 45 10", at(0.0, y, 0.0)),
+        format!("execute store result score #cfr_x {CAM_OBJ} run data get entity @s Pos[0] 1000"),
+        format!("execute store result score #cfr_y {CAM_OBJ} run data get entity @s Pos[1] 1000"),
+        format!("execute store result score #cfr_z {CAM_OBJ} run data get entity @s Pos[2] 1000"),
+        format!("scoreboard players set @s {FREE_TRIGGER} 1"),
+        format!("execute at @s run function {ns}:creator/camera/free"),
+        "assert entity @s[gamemode=spectator]".to_string(),
+        format!("tp @s {} 200 -40", at(6.0, y - 10, -5.0)),
+        format!("scoreboard players set @s {FREE_TRIGGER} 1"),
+        format!("execute at @s run function {ns}:creator/camera/free"),
+        "assert entity @s[gamemode=adventure]".to_string(),
+    ];
+    for (i, axis) in ["x", "y", "z"].iter().enumerate() {
+        free.push(format!(
+            "execute store result score #cfr_g{axis} {CAM_OBJ} run data get entity @s Pos[{i}] 1000"
+        ));
+        free.push(format!(
+            "scoreboard players operation #cfr_g{axis} {CAM_OBJ} -= #cfr_{axis} {CAM_OBJ}"
+        ));
+        free.push(format!("assert score #cfr_g{axis} {CAM_OBJ} matches 0"));
+    }
+    free.push(format!(
+        "execute store result score #cfr_yaw {CAM_OBJ} run data get entity @s Rotation[0] 100"
+    ));
+    free.push(format!("assert score #cfr_yaw {CAM_OBJ} matches 4500"));
+    // The place it kept is gone with the return.
+    free.push(format!(
+        "scoreboard players operation #cfr_fid {CAM_OBJ} = @s {FREE_ID}"
+    ));
+    free.push(format!("scoreboard players set #cfr_left {CAM_OBJ} 0"));
+    free.push(format!(
+        "execute as @e[type=minecraft:marker,tag={FREE_HOME}] if score @s {FREE_ID} = #cfr_fid {CAM_OBJ} run scoreboard players add #cfr_left {CAM_OBJ} 1"
+    ));
+    free.push(format!("assert score #cfr_left {CAM_OBJ} matches 0"));
+    tests.push((path("creator_free_returns"), lines(&free)));
+    tests
+}
+
 // ---------------------------------------------------------------------------
 // Cutscene rehearsal / shot calibration (spec-0019)
 // ---------------------------------------------------------------------------
