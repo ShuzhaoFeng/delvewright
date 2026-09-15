@@ -31,7 +31,7 @@ use delvewright_dsl::Verb;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
-use delvewright_dsl::{CameraWaypoint, Lethality, QuestEffect, TrapReset};
+use delvewright_dsl::{Lethality, Mark, QuestEffect, TrapReset};
 
 use crate::compiler::plan::{
     BodyScope, BodyStation, Plan, RegionEvent, RegionWrite, ResolvedAnchor, Step, TrapPlan,
@@ -313,7 +313,7 @@ pub const DW_GATE_TIMELINE: DwCode = DwCode::new("DW0410", ExitTier::Build);
 /// is the wrong cell for at least one of them and that occurrence opens with a
 /// teleport.
 ///
-/// `move-npc` / `move-actor` drivers are deduped by `(body, to_anchor)` — two
+/// `move-npc` / `move-actor` drivers are deduped by `(body, to)` — two
 /// beats that walk the same character to the same mark share one emitted
 /// function, and that function's waypoint polyline starts where the FIRST
 /// occurrence's branch leaves the body. That was a documented limitation for as
@@ -707,8 +707,8 @@ pub struct AnchorRoot {
 pub struct MovePlan {
     /// The moving NPC id (`npc/…`).
     pub npc: String,
-    /// The destination anchor id (`anchor/…`).
-    pub to_anchor: String,
+    /// The destination mark (spec-0066): anchor and offset.
+    pub to: delvewright_dsl::Mark,
     /// The integer target cell (feet), for the arrival assertion.
     pub target: [i32; 3],
     /// The A* **cell** path this leg walks, start to target inclusive — the route
@@ -2345,7 +2345,7 @@ impl World {
 
     /// Footprint-aware nearest-standable snap (spec-0014), used by `move-actor`
     /// endpoint resolution so a wide/tall puppet snaps to a cell IT can stand on.
-    fn snap_standable_fp(&self, c: [i32; 3], radius: i32, fp: &Footprint) -> Option<[i32; 3]> {
+    pub fn snap_standable_fp(&self, c: [i32; 3], radius: i32, fp: &Footprint) -> Option<[i32; 3]> {
         if self.standable_fp(c, fp) {
             return Some(c);
         }
@@ -2993,6 +2993,7 @@ fn npc_start(plan: &Plan, npc_id: &str) -> Option<[i32; 3]> {
         .find(|n| n.id.as_str() == npc_id)?;
     let area = plan.npc_area(npc_id)?;
     plan.point(area, npc.anchor.as_str())
+        .map(|p| delvewright_dsl::offset_cell(p, npc.offset))
 }
 
 /// Resolve a `move-npc` destination through [`body_station`], the one
@@ -3041,20 +3042,20 @@ fn move_target(
             DW_MOVE_UNROUTABLE,
             format!(
                 "move-npc: destination anchor `{to_anchor}` for NPC `{npc_id}` did not resolve \
-                 to a world position — use a `to_anchor` that the NPC's area prefab provides"
+                 to a world position — use a `to.anchor` that the NPC's area prefab provides"
             ),
         )),
     }
 }
 
 /// Plan every `move-npc` in the campaign into a walked-path [`MovePlan`], deduped
-/// by `(npc, to_anchor)` in first-seen order. `DW0307` when a move is
+/// by `(npc, to)` in first-seen order. `DW0307` when a move is
 /// unroutable, `DW0859` when its destination names an anchor two areas answer
 /// to and neither the move's own quest nor the NPC's home settles it
 /// ([`move_target`]). Each NPC's successive moves **chain**: the first leg
 /// starts at the stage-2 anchor, every later leg at the previous leg's target
 /// (round-6; see
-/// [`plan_actor_moves`]). Two moves sharing `(npc, to_anchor)` still share one
+/// [`plan_actor_moves`]). Two moves sharing `(npc, to)` still share one
 /// content-keyed driver, planned from the first occurrence's origin (documented
 /// limitation of the content key).
 ///
@@ -3088,7 +3089,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
     // follows it in declaration order. See [`BranchGate`] for the defect this
     // fixes and why the rule is stated as implication rather than exclusion.
     let mut history: StagingHistory = StagingHistory::new();
-    // The cell route planned for each `(npc, to_anchor)` driver, so a deduped
+    // The cell route planned for each `(npc, to)` driver, so a deduped
     // repeat occurrence can be re-checked against its own timeline's seals.
     let mut planned: BTreeMap<(String, String, String), Vec<[i32; 3]>> = BTreeMap::new();
     // The yaw each planned driver ends on, so a deduped repeat chains the same
@@ -3101,13 +3102,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
         BTreeMap::new();
     let mut cache = SealCache::default();
     for (eff, seal, beat) in crate::compiler::timeline::walk_with_beat_area(plan) {
-        let Verb::MoveNpc {
-            npc,
-            to_anchor,
-            speed,
-            ..
-        } = &eff.verb
-        else {
+        let Verb::MoveNpc { npc, to, speed, .. } = &eff.verb else {
             continue;
         };
         let gate = BranchGate::of(eff);
@@ -3117,26 +3112,25 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
             Some(i) => &cache.worlds[i],
             None => world,
         };
-        let anchor_pos = move_target(plan, npc.as_str(), to_anchor.as_str(), beat)?;
+        // The destination is a mark (spec-0066): the anchor resolves through the
+        // one station authority, and the snap starts from the mark's cell.
+        let to_mark = to.display();
+        let anchor_pos = to.cell(move_target(plan, npc.as_str(), to.anchor.as_str(), beat)?);
         let target = leg_world
             .snap_standable(anchor_pos, SNAP_RADIUS)
             .ok_or_else(|| Failure {
                 code: DW_MOVE_UNROUTABLE,
                 message: format!(
-                    "move-npc: no standable floor cell near destination anchor `{}` {anchor_pos:?} \
-                 for NPC `{}` — the anchor is walled in or over void; place `{}` beside walkable \
+                    "move-npc: no standable floor cell near destination `{}` {anchor_pos:?} \
+                 for NPC `{}` — the mark is walled in or over void; place `{}` beside walkable \
                  floor the npc can stand on",
-                    to_anchor.as_str(),
+                    to_mark,
                     npc.as_str(),
-                    to_anchor.as_str(),
+                    to_mark,
                 ),
             })?;
         let gkey = gate.key();
-        let key = (
-            npc.as_str().to_string(),
-            to_anchor.as_str().to_string(),
-            gkey.clone(),
-        );
+        let key = (npc.as_str().to_string(), to_mark.clone(), gkey.clone());
         if !seen.insert(key.clone()) {
             // Deduped: shares the first occurrence's driver, so it walks the
             // already-planned path — which must still be clear under THIS
@@ -3149,7 +3143,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
                     return Err(gate_timeline_error(
                         "move-npc",
                         npc.as_str(),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                         cells[0],
                         target,
                         &seal,
@@ -3167,7 +3161,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
                     return Err(shared_origin_error(
                         "move-npc",
                         npc.as_str(),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                         *planned_from,
                         planned_gate,
                         here,
@@ -3213,7 +3207,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
                 return Err(gate_timeline_error(
                     "move-npc",
                     npc.as_str(),
-                    to_anchor.as_str(),
+                    to_mark.as_str(),
                     start,
                     target,
                     &seal,
@@ -3225,7 +3219,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
                 return Err(furniture_route_failure(
                     &format!("move-npc `{}`", npc.as_str()),
                     &format!("{start:?}"),
-                    &format!("`{}` (floor {target:?})", to_anchor.as_str()),
+                    &format!("`{to_mark}` (floor {target:?})"),
                     &leg_world.furniture_over(&over),
                 ));
             }
@@ -3240,7 +3234,7 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
                          destination), or split it into shorter reachable hops",
                         npc.as_str(),
                         plan_npc_anchor(plan, npc.as_str()),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                     ),
                 });
             }
@@ -3264,14 +3258,14 @@ pub fn plan_moves(plan: &Plan, world: &World) -> Result<Vec<MovePlan>, Failure> 
         let mut yaws = yaws_along(&exact, seed);
         apply_arrival_yaw(
             &mut yaws,
-            anchor_facing_yaw(plan, npc.as_str(), to_anchor.as_str()),
+            anchor_facing_yaw(plan, npc.as_str(), to.anchor.as_str()),
         );
         let end_yaw = yaws.last().copied().unwrap_or(seed);
         record_staging(&mut history, npc.as_str(), gate, target, Some(end_yaw));
         planned_end_yaw.insert(key, end_yaw);
         out.push(MovePlan {
             npc: npc.as_str().to_string(),
-            to_anchor: to_anchor.as_str().to_string(),
+            to: to.clone(),
             target,
             cells,
             waypoints,
@@ -3374,8 +3368,8 @@ fn npc_spawn_yaw(plan: &Plan, npc_id: &str) -> i32 {
 pub struct ActorMovePlan {
     /// The moving actor id (`actor/…`).
     pub actor: String,
-    /// The destination anchor id (`anchor/…`).
-    pub to_anchor: String,
+    /// The destination mark (spec-0066): anchor and offset.
+    pub to: delvewright_dsl::Mark,
     /// The integer target cell (feet), for the arrival assertion.
     pub target: [i32; 3],
     /// The A* **cell** path this leg walks, start to target inclusive — see
@@ -3570,11 +3564,11 @@ fn gate_timeline_error(
 }
 
 /// Plan every `move-actor` into a walked-path [`ActorMovePlan`] over the actor's
-/// footprint, deduped by `(actor, to_anchor)` in first-seen order. `DW0325` when a
+/// footprint, deduped by `(actor, to)` in first-seen order. `DW0325` when a
 /// move is unroutable (names actor, leg, first blocked cell). Each actor's
 /// successive moves **chain** — first leg from the declared spawn anchor, every
 /// later leg from the previous leg's target (round-6 fix; see the loop comment).
-/// Two moves sharing `(actor, to_anchor)` still share one content-keyed driver,
+/// Two moves sharing `(actor, to)` still share one content-keyed driver,
 /// planned from the first occurrence's origin (documented limitation).
 ///
 /// Use-gate cells are walkable edges for a scripted puppet walk, exactly as for
@@ -3604,7 +3598,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
     // walked to the tide line from the GROUND branch's grave for the same reason
     // the island's Eurylochus walked from the beach.
     let mut history: StagingHistory = StagingHistory::new();
-    // The cell route planned for each `(actor, to_anchor)` driver, so a deduped
+    // The cell route planned for each `(actor, to)` driver, so a deduped
     // repeat occurrence can be re-checked against its own timeline's seals.
     let mut planned: BTreeMap<(String, String, String), Vec<[i32; 3]>> = BTreeMap::new();
     // The yaw each planned driver ends on, so a deduped repeat chains it forward.
@@ -3616,10 +3610,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
     let mut cache = SealCache::default();
     for (eff, seal) in crate::compiler::timeline::walk(plan) {
         let Verb::MoveActor {
-            actor,
-            to_anchor,
-            speed,
-            ..
+            actor, to, speed, ..
         } = &eff.verb
         else {
             continue;
@@ -3639,34 +3630,34 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
             ),
         })?;
         let fp = entity_footprint(&a.entity);
-        let dest = actor_anchor_pos(plan, to_anchor.as_str()).ok_or_else(|| Failure {
-            code: DW_ACTOR_UNROUTABLE,
-            message: format!(
-                "move-actor: destination anchor `{}` for actor `{}` did not resolve to a world \
-                 position — use a `to_anchor` some area's prefab provides",
-                to_anchor.as_str(),
-                actor.as_str()
-            ),
-        })?;
+        // The destination is a mark (spec-0066): the snap starts from its cell.
+        let to_mark = to.display();
+        let dest = actor_anchor_pos(plan, to.anchor.as_str())
+            .map(|p| to.cell(p))
+            .ok_or_else(|| Failure {
+                code: DW_ACTOR_UNROUTABLE,
+                message: format!(
+                    "move-actor: destination anchor `{}` for actor `{}` did not resolve to a \
+                     world position — use a `to.anchor` some area's prefab provides",
+                    to.anchor.as_str(),
+                    actor.as_str()
+                ),
+            })?;
         let target = leg_world
             .snap_standable_fp(dest, SNAP_RADIUS, &fp)
             .ok_or_else(|| Failure {
                 code: DW_ACTOR_UNROUTABLE,
                 message: format!(
-                    "move-actor: no cell the `{}` footprint can stand on near destination anchor \
-                     `{}` {dest:?} for actor `{}` — the anchor is walled in, too low a ceiling for \
+                    "move-actor: no cell the `{}` footprint can stand on near destination \
+                     `{}` {dest:?} for actor `{}` — the mark is walled in, too low a ceiling for \
                      this mob, or over void",
                     a.entity,
-                    to_anchor.as_str(),
+                    to_mark,
                     actor.as_str()
                 ),
             })?;
         let gkey = gate.key();
-        let key = (
-            actor.as_str().to_string(),
-            to_anchor.as_str().to_string(),
-            gkey.clone(),
-        );
+        let key = (actor.as_str().to_string(), to_mark.clone(), gkey.clone());
         if !seen.insert(key.clone()) {
             // Deduped: this occurrence shares the first occurrence's content-keyed
             // driver, so the path it walks is the one already planned. It still has
@@ -3681,7 +3672,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
                     return Err(gate_timeline_error(
                         "move-actor",
                         actor.as_str(),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                         cells[0],
                         target,
                         &seal,
@@ -3698,7 +3689,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
                     return Err(shared_origin_error(
                         "move-actor",
                         actor.as_str(),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                         *planned_from,
                         planned_gate,
                         here,
@@ -3721,8 +3712,9 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
         let start = match prior.map(|s| s.pos) {
             Some(pos) => pos,
             None => {
-                let start_anchor =
-                    actor_anchor_pos(plan, a.anchor.as_str()).ok_or_else(|| Failure {
+                let start_anchor = actor_anchor_pos(plan, a.anchor.as_str())
+                    .map(|p| delvewright_dsl::offset_cell(p, a.offset))
+                    .ok_or_else(|| Failure {
                         code: DW_ACTOR_UNROUTABLE,
                         message: format!(
                             "move-actor: actor `{}` spawn anchor `{}` did not resolve to a world \
@@ -3746,7 +3738,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
                 return Err(gate_timeline_error(
                     "move-actor",
                     actor.as_str(),
-                    to_anchor.as_str(),
+                    to_mark.as_str(),
                     start,
                     target,
                     &seal,
@@ -3760,7 +3752,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
                 return Err(furniture_route_failure(
                     &format!("move-actor `{}`", actor.as_str()),
                     &format!("{start:?}"),
-                    &format!("`{}` (floor {target:?})", to_anchor.as_str()),
+                    &format!("`{to_mark}` (floor {target:?})"),
                     &leg_world.furniture_over_fp(&over, &fp),
                 ));
             }
@@ -3777,7 +3769,7 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
                         actor.as_str(),
                         a.entity,
                         a.anchor.as_str(),
-                        to_anchor.as_str(),
+                        to_mark.as_str(),
                     ),
                 });
             }
@@ -3803,13 +3795,13 @@ pub fn plan_actor_moves(plan: &Plan, world: &World) -> Result<Vec<ActorMovePlan>
         // A puppet takes its arrival turn for the same reason a villager does —
         // it is a walked body, and the verb it was moved by is not what decides
         // which way it ends up looking.
-        apply_arrival_yaw(&mut yaws, actor_anchor_facing_yaw(plan, to_anchor.as_str()));
+        apply_arrival_yaw(&mut yaws, actor_anchor_facing_yaw(plan, to.anchor.as_str()));
         let end_yaw = yaws.last().copied().unwrap_or(seed);
         record_staging(&mut history, actor.as_str(), gate, target, Some(end_yaw));
         planned_end_yaw.insert(key, end_yaw);
         out.push(ActorMovePlan {
             actor: actor.as_str().to_string(),
-            to_anchor: to_anchor.as_str().to_string(),
+            to: to.clone(),
             target,
             cells,
             waypoints,
@@ -3855,7 +3847,7 @@ fn plan_npc_anchor(plan: &Plan, npc_id: &str) -> String {
 /// The camera dolly world points of a cutscene (anchor + offset, block centres) —
 /// the exact points the emitter lerps between. Shared with the emitter so the
 /// air-corridor check validates what actually ships.
-pub fn camera_points(plan: &Plan, path: &[CameraWaypoint]) -> Vec<[f64; 3]> {
+pub fn camera_points(plan: &Plan, path: &[Mark]) -> Vec<[f64; 3]> {
     path.iter()
         .map(|w| anchor_offset_point(plan, w.anchor.as_str(), w.offset))
         .collect()
@@ -3864,7 +3856,7 @@ pub fn camera_points(plan: &Plan, path: &[CameraWaypoint]) -> Vec<[f64; 3]> {
 /// The world point a cutscene's `look_at` subject resolves to (DSL v0.6) — the
 /// same anchor + offset block-centre convention as [`camera_points`], so a
 /// waypoint and a look target at the same anchor/offset name the same point.
-pub fn camera_look_point(plan: &Plan, target: &delvewright_dsl::CameraTarget) -> [f64; 3] {
+pub fn camera_look_point(plan: &Plan, target: &Mark) -> [f64; 3] {
     anchor_offset_point(plan, target.anchor.as_str(), target.offset)
 }
 
@@ -6593,7 +6585,7 @@ fn aggro_sources(
         if !actor_fights(c, a) {
             continue;
         }
-        let Some(pos) = crate::compiler::plan::point_any(&plan.anchors, a.anchor.as_str()) else {
+        let Some(pos) = plan.body_point(delvewright_dsl::BodyRef::Actor(a)) else {
             continue;
         };
         let (radius, radius_source) = match a.attributes.and_then(|at| at.follow_range) {

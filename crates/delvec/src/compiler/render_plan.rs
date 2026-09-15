@@ -880,14 +880,14 @@ pub fn render_plan(
     // --- NPCs --------------------------------------------------------------
     for npc in &plan.npcs {
         let area = plan.npc_area(&npc.npc_id).unwrap_or("").to_string();
-        let anchor = c
+        let decl = c
             .npcs
             .content
             .npcs
             .iter()
-            .find(|n| n.id.as_str() == npc.npc_id)
-            .map(|n| n.anchor.as_str())
-            .unwrap_or("");
+            .find(|n| n.id.as_str() == npc.npc_id);
+        let anchor = decl.map(|n| n.anchor.as_str()).unwrap_or("");
+        let offset = decl.map(|n| n.offset).unwrap_or([0, 0, 0]);
         let name = c
             .npcs
             .content
@@ -902,7 +902,7 @@ pub fn render_plan(
             continue;
         };
         let f = facing_vec(facing.as_deref());
-        let base = centre(*pos);
+        let base = centre(delvewright_dsl::offset_cell(*pos, offset));
         // The player approaches from the direction the NPC faces (NPCs are summoned
         // facing the player), so the camera stands there and looks back at the NPC.
         let eye = [base[0] + f[0] * 4.0, base[1] + 1.6, base[2] + f[2] * 4.0];
