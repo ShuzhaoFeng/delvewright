@@ -238,8 +238,7 @@ fn walker_to(to: Value) -> Campaign {
 fn last_tp(body: &str) -> [f64; 3] {
     let line = body
         .lines()
-        .filter(|l| l.contains(" run tp "))
-        .next_back()
+        .rfind(|l| l.contains(" run tp "))
         .unwrap_or_else(|| panic!("no tp line in:\n{body}"));
     let words: Vec<&str> = line.split_whitespace().collect();
     let n = words.len();

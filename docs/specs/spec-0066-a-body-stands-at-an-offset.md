@@ -29,7 +29,7 @@
   reference resolves where its object stands). Every rule below is marked
   **cited** or **authored**.
 - **Numbers**: no spec or ADR beyond this one. **One new DW code**, `DW0897`
-  (§5.3). **`dsl_version` 0.27.0**: bodies, destinations, the cast ledger and a
+  (§5.3). **`dsl_version` moves** (the minor): bodies, destinations, the cast ledger and a
   sound's point gain a field; two field names change.
 - **Non-goals**: an offset on a killing volume's region or on any block-
   addressed anchor — a gate, a prop cell, a trap, a container, a trigger's
@@ -316,7 +316,7 @@ implementing tree measures.
    `Actor`, `to` as an object with `anchor` and `offset` on `move-npc`,
    `move-actor` and `teleport`, the mark form of `cast[].at`, and `offset` on
    `SoundAt::anchor`; `to_anchor` appears nowhere in the export; under the
-   `dsl_version` the implementing round is handed. *Tree: met at 0.27.0 —
+   `dsl_version` the implementing round is handed. *Tree: met at the handed `dsl_version` —
    `offset` on `Npc` and `Actor`, `to` a `$ref` to `Mark` on all three verbs,
    `CastPlace` carrying a `Mark` arm, `offset` on the `anchor` arm of
    `SoundAt`, `to_anchor` 0 times.*
@@ -358,8 +358,12 @@ implementing tree measures.
     perturbing the page's offset moves its summon coordinate; the new probe
     is refused at build with the new code; `two-bodies-on-one-mark` is still
     refused with `DW0896`; `tools/check-gallery-coverage.py` reports 0 units in
-    neither state; two builds are byte-identical (ADR-0006). *Tree: met — see
-    the implementing pull request's gate record.*
+    neither state; two builds are byte-identical (ADR-0006). *Tree: met — the
+    baseline builds all 8 domain points green; the page's offset moved from 4
+    to 3 moves its summon from x 17.5 to 16.5; the probe is refused with
+    `DW0897` and `two-bodies-on-one-mark` with `DW0896`; coverage reports
+    881 units, 877 bound, 4 refusal-proven, 0 in neither state; two builds of
+    the primary write 545 files with one tree hash.*
 11. **Determinism.** No consumer of a mark iterates a hash-ordered container;
     the double-build gate is green. *Tree: met — no hash-ordered container is
     added; the double-build gate is green.*
