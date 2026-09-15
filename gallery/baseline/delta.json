@@ -37,7 +37,7 @@
     "void-horizon.en:packtest-datapack/data/gallery/test/fixture_de81da977745de5e.mcfunction",
     "void-horizon.en:packtest-datapack/data/gallery/test/teleport_de81da977745de5e.mcfunction"
   ],
-  "base_commit": "af0110ca1459ae8ea822c78ea63c29411ba94ea5",
+  "base_commit": "19f7a792c80c52a7f337569f485b6a3ad830caa0",
   "changed": [
     "easy.en:creator-datapack/data/gallery/function/creator/rehearsal/defaults.mcfunction",
     "easy.en:creator-datapack/layout.json",
