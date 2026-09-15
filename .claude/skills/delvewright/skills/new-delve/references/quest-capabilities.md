@@ -51,6 +51,20 @@ this section is what they are *for* and the traps in each.
   anchor — **the compiler fills furniture, it never places it** (`DW0431`).
   Elites and set-piece actors take `equipment` in the same shape wave mobs use,
   enchantments included.
+- **`equipment` has the game's eight slots, and a body shows only some of
+  them.** `head`, `chest`, `legs`, `feet`, `main_hand`, `off_hand`, `body`
+  (horse armour, wolf armour, a llama's carpet, a nautilus's armour, a happy
+  ghast's harness) and `saddle`; each takes a bare item id or `{item,
+  enchantments}`. The server keeps whatever you write on any living body, but
+  the player sees a piece only where that body's model draws it, so a piece is
+  refused where the game would not show it on that body (`DW0898`): a slot the
+  body does not draw (a chestplate on a horse, a sword in a creeper's hand, a
+  helmet on a villager, whose head takes a pumpkin or a skull but not armour),
+  an item in a slot other than its own (a helmet in `legs`; the hands take
+  anything), or an item the body may not wear (a saddle on a zombie, horse
+  armour on a skeleton horse). The refusal lists what the body does draw. A
+  held weapon wanted only for its damage is written as `attributes`, which apply
+  whether or not anything is drawn. `drops[].slot` takes the same eight names.
 - **A `collect` has three shapes, and which are available to you depends on the
   library.** Give the item an `item_name` ("Cheese", "Tide Ledger") in all
   three: it is what the player reads on the stack, it translates like every
@@ -355,6 +369,31 @@ this section is what they are *for* and the traps in each.
   hold a body to it; and no declaration touches the error tier — a declared
   climber still cannot walk through a closed fence gate (`DW0452`). Declare it on
   the body, never on the beat.
+- **What a body can wear depends on what it is.** Dress it from this table;
+  anything else is refused (`DW0898`).
+
+  | Body | Wears |
+  |---|---|
+  | zombie, husk, drowned, zombie villager, skeleton, stray, bogged, parched, wither skeleton, piglin, piglin brute, zombified piglin, player-shaped mannequin (any skinned body), armor stand | armour in `head`/`chest`/`legs`/`feet`, a pumpkin, skull or block in `head`, an elytra in `chest`, anything in both hands |
+  | giant | armour in the four armour slots, anything in both hands |
+  | evoker, illusioner, pillager, vindicator, copper golem | a pumpkin, skull or block in `head`; anything in both hands |
+  | villager, wandering trader | a pumpkin, skull or block in `head`; anything in `main_hand` |
+  | fox, dolphin, panda, witch | anything in `main_hand` |
+  | allay, vex | anything in both hands |
+  | horse, zombie horse, skeleton horse, nautilus, zombie nautilus | `body` and `saddle` |
+  | camel, camel husk, donkey, mule, pig, strider | `saddle` |
+  | wolf, llama, trader llama, happy ghast | `body` |
+  | every other living body — creeper, spider, warden, enderman, iron golem, ghast among them | nothing |
+
+  **Four bodies show their hand only while they fight or sit**: an evoker while
+  casting, an illusioner while casting or aggressive, a vindicator while
+  aggressive, a panda while sitting. A NoAI actor of those species shows its
+  hand after it is unleashed, not before. **A horse is dressed through `body`
+  and `saddle`**, and the item says which horse it fits: iron horse armour on a
+  horse or a zombie horse, never a skeleton horse. **A mount is posted, not
+  walked**: the router measures a horse, camel, donkey, mule, llama or strider as
+  a person-sized body, so stage a mounted set piece on its mark and do not route
+  it through doorways.
 - **A status effect is a verb — and it ends by expiring, never by being
   cleared.** `give-effect {effect, seconds, amplifier?, hide_particles?, in?}`
   grants any pinned-1.21.11 status effect; `in {anchor, extent}` narrows it to
