@@ -138,7 +138,7 @@ impl Placed<'_> {
             self.body.id(),
             self.body.stage(),
             self.path,
-            self.body.anchor().as_str(),
+            self.body.mark().display(),
         )
     }
 }

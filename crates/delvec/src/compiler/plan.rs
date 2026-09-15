@@ -3404,7 +3404,8 @@ impl<'a> Plan<'a> {
     }
 
     /// **The cell a body is summoned onto** — the one resolution rule for a
-    /// [`delvewright_dsl::BodyRef`] of either class.
+    /// [`delvewright_dsl::BodyRef`] of either class: its mark's anchor, resolved,
+    /// plus the mark's offset (spec-0066).
     ///
     /// A body that declares an area is resolved in that area's table first and
     /// falls back to any placed piece; a body that declares none (an actor) is
@@ -3418,13 +3419,45 @@ impl<'a> Plan<'a> {
     /// dangling references, and a geometry or occupancy finding for one would
     /// send the author to the wrong line.
     pub fn body_point(&self, body: delvewright_dsl::BodyRef<'_>) -> Option<[i32; 3]> {
-        let anchor = body.anchor().as_str();
-        match body.area() {
-            Some(area) => self
-                .point(area.as_str(), anchor)
-                .or_else(|| self.point_any(anchor)),
-            None => self.point_any(anchor),
+        let mark = body.mark();
+        self.body_anchor_site(body)
+            .map(|(_, anchor_cell)| mark.cell(anchor_cell))
+    }
+
+    /// Where a body's mark's ANCHOR resolves — the area that answered and the
+    /// anchor's own cell, before the offset is added. The same rule as
+    /// [`Self::body_point`] (area-scoped for a body that declares an area, across
+    /// every placed piece for one that does not); the area is what `DW0897` asks
+    /// [`Self::piece_bounds`] about.
+    pub fn body_anchor_site(
+        &self,
+        body: delvewright_dsl::BodyRef<'_>,
+    ) -> Option<(String, [i32; 3])> {
+        let mark = body.mark();
+        let anchor = mark.anchor.as_str();
+        if let Some(area) = body.area()
+            && let Some(p) = self.point(area.as_str(), anchor)
+        {
+            return Some((area.as_str().to_string(), p));
         }
+        self.point_any_site(anchor)
+    }
+
+    /// [`Self::point_any`] with the area that answered: the first `(area, name)`
+    /// in the anchor table's order whose name is `anchor`.
+    pub fn point_any_site(&self, anchor: &str) -> Option<(String, [i32; 3])> {
+        self.anchors
+            .iter()
+            .find(|((_, n), _)| n == anchor)
+            .map(|((area, _), resolved)| {
+                (
+                    area.clone(),
+                    match resolved {
+                        ResolvedAnchor::Point { pos, .. } => *pos,
+                        ResolvedAnchor::Gate { from, .. } => *from,
+                    },
+                )
+            })
     }
 
     /// Resolve `(area, anchor)` to a point position, if it is a point anchor.
@@ -3939,8 +3972,8 @@ fn collect_effect_anchors(e: &QuestEffect, set: &mut BTreeSet<String>) {
     if let Some((a, _)) = e.set_block() {
         set.insert(a.as_str().to_string());
     }
-    if let Some((_, a)) = e.move_npc() {
-        set.insert(a.as_str().to_string());
+    if let Some((_, to)) = e.move_npc() {
+        set.insert(to.anchor.as_str().to_string());
     }
     // Every shot's waypoints, plus each shot's `look_at` subject — the camera is
     // aimed at that world point, so the area's assembly must provide its anchor.
@@ -4272,7 +4305,7 @@ fn build_critical_path(
                         &begun,
                         flags_at.get(si).unwrap_or(&BTreeSet::new()),
                     ) {
-                        Some(crate::compiler::cast::Station::At(anchor)) => {
+                        Some(crate::compiler::cast::Station::At(anchor, ledger_offset)) => {
                             match body_station(
                                 anchors,
                                 BodyScope::Beat {
@@ -4284,7 +4317,12 @@ fn build_critical_path(
                                 station @ BodyStation::At { .. } => {
                                     let (a, pos) = station
                                         .place()
-                                        .map(|(a, p)| (a.to_string(), p))
+                                        .map(|(a, p)| {
+                                            (
+                                                a.to_string(),
+                                                delvewright_dsl::offset_cell(p, ledger_offset),
+                                            )
+                                        })
                                         .expect("an `At` station has a place");
                                     // `DW0461`, the place arm. This is the ONE
                                     // site in the compiler that reads a ledger
@@ -4311,8 +4349,10 @@ fn build_critical_path(
                                             staged.anchor.as_str(),
                                         )
                                         .place()
-                                        && (ha, hp) != (a.as_str(), pos)
+                                        && (ha, delvewright_dsl::offset_cell(hp, staged.offset))
+                                            != (a.as_str(), pos)
                                     {
+                                        let hp = delvewright_dsl::offset_cell(hp, staged.offset);
                                         return Err(PlanError::new(
                                             crate::compiler::cast::DW_CAST_PLACEMENT,
                                             crate::compiler::cast::station_split(
@@ -4405,7 +4445,14 @@ fn build_critical_path(
                         // campaign. Keep the stage-2 anchor, byte for byte.
                         None => {
                             let anchor = decl.map(|nn| nn.anchor.as_str()).unwrap_or("");
-                            (home_area.to_string(), point_of(anchors, home_area, anchor)?)
+                            let offset = decl.map(|nn| nn.offset).unwrap_or([0, 0, 0]);
+                            (
+                                home_area.to_string(),
+                                delvewright_dsl::offset_cell(
+                                    point_of(anchors, home_area, anchor)?,
+                                    offset,
+                                ),
+                            )
                         }
                     };
                     steps.push(Step::TalkTo {
@@ -4981,7 +5028,10 @@ fn collect_ambushes(
             .actors
             .iter()
             .filter_map(|id| by_id.get(id.as_str()))
-            .filter_map(|a| point_any(anchors, a.anchor.as_str()))
+            .filter_map(|a| {
+                point_any(anchors, a.anchor.as_str())
+                    .map(|p| delvewright_dsl::offset_cell(p, a.offset))
+            })
             .collect();
         out.push(AmbushPlan {
             id: amb.id.as_str().to_string(),

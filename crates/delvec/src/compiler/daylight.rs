@@ -372,7 +372,7 @@ fn collect_staged(plan: &Plan, spawns: &BTreeMap<String, Vec<[i32; 3]>>) -> Vec<
         if !fightable_actor(c, a) {
             continue;
         }
-        let Some(pos) = plan.point_any(a.anchor.as_str()) else {
+        let Some(pos) = plan.body_point(delvewright_dsl::BodyRef::Actor(a)) else {
             continue;
         };
         out.push(Staged {

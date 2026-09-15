@@ -117,6 +117,7 @@ pub mod lethal;
 pub mod light;
 pub mod load;
 pub mod loot;
+pub mod mark;
 pub mod massing;
 pub mod nav;
 pub mod plan;

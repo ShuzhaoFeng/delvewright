@@ -205,7 +205,9 @@
                 "verb": "arrives"
               },
               "npc": "npc/keeper",
-              "to_anchor": "anchor/objective",
+              "to": {
+                "anchor": "anchor/objective"
+              },
               "type": "move-npc"
             },
             {

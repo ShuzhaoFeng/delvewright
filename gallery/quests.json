@@ -716,7 +716,9 @@
                 }
               ],
               "speed": 1.0,
-              "to_anchor": "anchor/pedestal",
+              "to": {
+                "anchor": "anchor/pedestal"
+              },
               "type": "move-npc",
               "when": {
                 "requires_state": [
@@ -794,7 +796,9 @@
               },
               "npc": "npc/warden",
               "speed": 1.0,
-              "to_anchor": "anchor/pocket",
+              "to": {
+                "anchor": "anchor/pocket"
+              },
               "type": "move-npc"
             }
           ],
@@ -1239,7 +1243,9 @@
                 }
               ],
               "speed": 1.2,
-              "to_anchor": "anchor/vantage",
+              "to": {
+                "anchor": "anchor/vantage"
+              },
               "type": "move-actor",
               "when": {
                 "forbids_flags": [
@@ -1505,7 +1511,9 @@
                   1
                 ]
               },
-              "to": "anchor/vantage",
+              "to": {
+                "anchor": "anchor/vantage"
+              },
               "type": "teleport",
               "when": {
                 "forbids_flags": [
@@ -1928,7 +1936,9 @@
                 "verb": "arrives"
               },
               "speed": 1.0,
-              "to_anchor": "anchor/pocket",
+              "to": {
+                "anchor": "anchor/pocket"
+              },
               "type": "move-actor"
             },
             {
@@ -2107,7 +2117,9 @@
               },
               "npc": "npc/marshal",
               "speed": 1.0,
-              "to_anchor": "anchor/pocket",
+              "to": {
+                "anchor": "anchor/pocket"
+              },
               "type": "move-npc",
               "when": {
                 "forbids_flags": [
