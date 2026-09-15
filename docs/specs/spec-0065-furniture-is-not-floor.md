@@ -373,11 +373,12 @@ criterion the verdict is recorded as a debt.
    no furniture prints `0 region(s)`; a test asserts the line on the gallery
    primary has `F ≥ 1` and `W ≥ 1`. *Tree: debt.*
 9. **The gallery.** The generator lays the table and writes the anchor; the
-   primary builds green; perturbing the role away moves a byte in the actor's
-   tick function and in `critical-path-waypoints.json`; `tools/check-gallery-
+   primary builds green; perturbing the declaration away moves a byte in the
+   actor's tick function — the bearer's per-tick `tp` samples change in count
+   and their y rises over the table; `tools/check-gallery-
    coverage.py` reports 0 units in neither state; two builds are byte-identical
    (ADR-0006). *Tree: debt — no table in the hall; the generator's anchors are
-   all points.*
+   all points.* (loosening: criterion 9 no longer asserts a move in critical-path-waypoints.json, which holds only the player's route)
 10. **Determinism.** Furniture regions enter `World` in placed-piece order and
     anchor-name order, never hash order; the double-build gate over the gallery
     is green. *Tree: debt.*
@@ -388,7 +389,13 @@ criterion the verdict is recorded as a debt.
 12. **The ledger row for §8.1** exists in `docs/playtest-findings.json` with a
     non-zero binding computed by `tools/staging-gate.py`'s `probe()` over the
     edit verbs that write blocks, or the round records that the binding is zero
-    because no campaign lays furniture. *Tree: not yet due.*
+    because no campaign lays furniture. *Tree: not yet due.* *Implementation:
+    recorded debt — `probe()` over `set-block` / `fill-region` in the gallery
+    primary's `quests.json` measures a binding of 2, and the row cannot land
+    yet: with no general-form carrier it is `NO-GENERAL-FORM` at
+    `tools/staging-gate.py` (exit 1), and `tools/check-gallery-stageable.py`
+    refuses a gallery point carrying a capability-gap row with no general-form
+    carrier. No row is added.*
 13. A demo-level row is queued when the code lands. *Tree: not yet due.*
 
 ## 10. Decisions for the owner
