@@ -406,17 +406,9 @@ fn burn_message(body: &Staged, sunlit: [i32; 3]) -> String {
         entity,
         cells,
         radius,
-        helmeted,
+        ..
     } = body;
     let at = cells[0];
-    let head = if *helmeted {
-        format!(
-            "It already wears a helmet, and for `{entity}` that changes nothing: a phantom \
-             burns even when equipped with a helmet through commands (minecraft.wiki/w/Phantom). "
-        )
-    } else {
-        String::new()
-    };
     let remedy = if head_piece_is_a_remedy(entity) {
         "Give this stack `equipment.head` (any head item — vanilla damages the helmet instead \
          of igniting the mob, and the compiler emits drop chance 0 so it can never be farmed), \
@@ -441,7 +433,7 @@ fn burn_message(body: &Staged, sunlit: [i32; 3]) -> String {
          [{}, {}, {}] — walkable ground inside this stack's own {radius}-block aggro radius. A \
          player retreating there is still its target, so the fight the party is meant to have \
          is decided by the sun instead: this is the Barrowmere gate yard, where two of three \
-         footmen died to sunlight in under twenty seconds with every proof green. {head}Fix the \
+         footmen died to sunlight in under twenty seconds with every proof green. Fix the \
          content: {remedy} Do NOT use `set-time` — the delve's hour is a pacing decision the \
          author made, and moving it to save a mob spends a beat{sanctioned}.",
         at[0], at[1], at[2], sunlit[0], sunlit[1], sunlit[2],

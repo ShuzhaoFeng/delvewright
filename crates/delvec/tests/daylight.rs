@@ -310,12 +310,35 @@ fn an_unhelmeted_skeleton_is_dw0496() {
 }
 
 /// A phantom burns *through* a helmet (wiki, 1.21.11: "They burn even when
-/// equipped with helmets through commands"), so the head slot is no exemption
-/// and the prescription must not offer one.
+/// equipped with helmets through commands"), and its body draws no head slot,
+/// so the prescription names a roof and never the head piece — and the head
+/// piece itself is refused where it is declared (`DW0898`), so the pair of
+/// gates never prescribes what the other refuses.
 #[test]
-fn a_helmeted_phantom_is_still_dw0496() {
+fn a_phantom_is_prescribed_a_roof_and_refused_a_helmet() {
     let tmp = TempCampaign::new("phantom");
     campaign_with(tmp.path(), true, |_, quests| {
+        set_mobs(
+            quests,
+            serde_json::json!([{
+                "entity": "minecraft:phantom",
+                "count": 1,
+                "name": "The Long Night"
+            }]),
+        );
+    });
+    let err = build(tmp.path()).expect_err("a phantom burns under open sky at noon");
+    assert_eq!(code_of(&err), "DW0496");
+    let message = message_of(&err);
+    assert!(message.contains("phantom"), "names the species: {message}");
+    assert!(
+        message.contains("Roof the ground")
+            && !message.contains("Give this stack `equipment.head`"),
+        "prescribes a roof and no head piece: {message}"
+    );
+
+    let helmeted = TempCampaign::new("phantom-helmet");
+    campaign_with(helmeted.path(), true, |_, quests| {
         set_mobs(
             quests,
             serde_json::json!([{
@@ -326,12 +349,22 @@ fn a_helmeted_phantom_is_still_dw0496() {
             }]),
         );
     });
-    let err = build(tmp.path()).expect_err("a helmet does not save a phantom");
-    assert_eq!(code_of(&err), "DW0496");
-    assert!(
-        message_of(&err).contains("phantom"),
-        "must name the species whose helmet does not work: {}",
-        message_of(&err)
+    let loaded = load_campaign_dir(helmeted.path()).unwrap();
+    let campaign = parse_campaign(&loaded.raw).expect("fixture parses");
+    let prefabs = PrefabRegistry::load_dir(&common::shown_prefabs_dir("daylight")).unwrap();
+    let refused: Vec<Diagnostic> = validate_campaign_with(
+        &campaign,
+        &FullItemRegistry::v1_21_11(),
+        &prefabs,
+        &FullEntityRegistry::v1_21_11(),
+    )
+    .into_iter()
+    .filter(|d| d.code == "DW0898")
+    .collect();
+    assert_eq!(
+        refused.len(),
+        1,
+        "a helmet on a phantom is refused: {refused:#?}"
     );
 }
 
