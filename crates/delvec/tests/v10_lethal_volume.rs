@@ -748,7 +748,7 @@ fn with_fixture<R>(
 /// So the perturbation is the vacuous shape itself. The same judgement is taken
 /// twice over one fixture, once against each world, and the two numbers are the
 /// finding: **zero** caught cells over the lethal-applied world, **nine** over
-/// the counterfactual `World::without_lethal` the check really reads. Nine is
+/// the counterfactual `World::without_exclusions` the check really reads. Nine is
 /// the floor course the fixture lays in magma, cell for cell.
 #[test]
 fn the_population_is_the_lethality_free_one() {
@@ -770,7 +770,7 @@ fn the_population_is_the_lethality_free_one() {
         assert_eq!(bound.shown(), 9, "and every one of them shows: {bound:?}");
 
         // The same judgement over a world whose lethality has ALREADY been applied —
-        // the vacuous shape. `without_lethal` is idempotent, so handing the check a
+        // the vacuous shape. `without_exclusions` is idempotent, so handing the check a
         // world that already carries no volumes is not the perturbation; what is, is
         // taking the population from the world the ROUTER walks. Done here directly,
         // so the number this check would report if it read the wrong world is on the
