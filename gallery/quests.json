@@ -127,6 +127,25 @@
         "entity": "minecraft:villager",
         "facing": "south",
         "id": "actor/hall-page"
+      },
+      {
+        "anchor": "anchor/annex-threshold",
+        "drops": [
+          {
+            "slot": "body"
+          },
+          {
+            "slot": "saddle"
+          }
+        ],
+        "entity": "minecraft:horse",
+        "equipment": {
+          "body": "minecraft:iron_horse_armor",
+          "saddle": "minecraft:saddle"
+        },
+        "facing": "north",
+        "id": "actor/destrier",
+        "tier": "elite"
       }
     ],
     "ambushes": [
@@ -896,6 +915,20 @@
                       "happening": {
                         "subject": "actor/hall-page",
                         "text": "A page follows the usher out and takes the mark beside him, not the one he is standing on.",
+                        "verb": "arrives"
+                      },
+                      "type": "spawn-actor"
+                    }
+                  ]
+                },
+                {
+                  "at_ticks": 50,
+                  "effects": [
+                    {
+                      "actor": "actor/destrier",
+                      "happening": {
+                        "subject": "actor/destrier",
+                        "text": "A barded, saddled horse is led to the mouth of the annex and left standing there.",
                         "verb": "arrives"
                       },
                       "type": "spawn-actor"
