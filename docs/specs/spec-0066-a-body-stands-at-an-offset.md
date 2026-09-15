@@ -1,6 +1,6 @@
 # spec-0066: A body stands at an offset
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Ground**: written against engine `495fca44` (`origin/main`), read only
   (its difference from `93c9802e` is two CI files; no compiler line moved), and
   against the released content revision `73182027`,
@@ -28,9 +28,9 @@
   refusal of an offset on a killing volume's region) and spec-0055 (an anchor
   reference resolves where its object stands). Every rule below is marked
   **cited** or **authored**.
-- **Numbers**: no spec or ADR beyond this one. **One new DW code** (§5.3), to
-  be allocated at implementation. **`dsl_version` moves**: bodies, destinations,
-  the cast ledger and a sound's point gain a field; two field names change.
+- **Numbers**: no spec or ADR beyond this one. **One new DW code**, `DW0897`
+  (§5.3). **`dsl_version` 0.27.0**: bodies, destinations, the cast ledger and a
+  sound's point gain a field; two field names change.
 - **Non-goals**: an offset on a killing volume's region or on any block-
   addressed anchor — a gate, a prop cell, a trap, a container, a trigger's
   `at`, a volley's slot, a wave's forming point (§7); a formation vocabulary
@@ -189,22 +189,35 @@ says, which is what a drill does.
 ### 5.1 Everything that checks an anchor checks the mark
 
 `DW0450` (a body inside solid geometry), `DW0511` (a posted body inside a
-killing volume), `DW0896` (two live bodies on one cell), `DW0461` (the ledger
-against the world), the wave-seat and clearance passes, the camera's static
-aim at an `npc` / `actor` subject — every one reads `Plan::body_point`, and
-`Plan::body_point` adds the offset. Not one of them is edited for this spec
-beyond the type it reads, which is the property `body_sites` was built to
-give: a rule about a body's position is a filter over one walk and one
-resolution, never a second loop.
+killing volume), `DW0896` (two live bodies on one cell), `DW0359` (a body on an
+affordance), `DW0461` (the ledger against the world), the daylight, aggro and
+combat-plan readers, the camera's static aim at an `npc` / `actor` subject —
+every one reads the mark. A body's cell comes from `Plan::body_point`, which
+adds the offset for every body `body_sites` walks; the summons, the snapshot
+and render-plan posts and the critical path's `talk-to` position add the same
+offset to the anchor cell they resolve, and a destination and a cast row add
+theirs after `plan::body_station` resolves the anchor. A `strike` or `use`
+trigger at an anchor rides an NPC's hitbox only while that NPC's offset is
+zero, since only then does the body stand on the anchor's own cell. A walk
+driver's function name carries a non-zero offset (`mv_<npc>_<anchor>_o<x>_<y>_<z>`,
+a negative component spelled `m<n>`), so a walk to a bare anchor keeps its
+name and two walks to one anchor at two offsets are two drivers. `DW0461`'s
+place arm prints the document arm's sentence when the two marks differ, and
+the two-buildings sentence when two equal marks resolve to two places.
 
 ### 5.2 `DW0896`'s prescription
 
 The rule does not move; its remedy gains the move that is now the campaign's
 to make: *give each body its own mark — an offset apiece from one anchor — or
 make the campaign prove they take turns*. A gate that names a remedy owes a
-check that the remedy is reachable, and `remedy_reachability.rs` gains the
-row: the muster's seven bodies with offsets `[0, 0, 0]` through `[0, 0, -12]`
-end green.
+check that the remedy is reachable, and `remedy_reachability.rs` carries the
+row: seven live bodies on `anchor/exit` of the hello-world fixture are refused,
+and the same seven at offsets `[-3, 0, 0]` through `[3, 0, 0]` end green under
+`DW0896` and `DW0897` both. This is a loosening of the row's geometry: the
+bodies stand one block apart along x, because the fixture's south room is nine
+cells wide and a rank two blocks apart over thirteen cells does not fit it;
+what the row asserts — seven bodies, one anchor, an offset apiece, green — is
+unchanged.
 
 ### 5.3 The one new refusal — an offset that leaves the room
 
@@ -216,36 +229,41 @@ second placement vocabulary wearing a small field, and it is the vacuous
 shape for every geometry proof that assumes a body is in the room its anchor
 named. Refused at build tier (exit 3), where the piece boxes are known, with
 the anchor, the offset, the cell it reaches and the box it left in the
-message; the remedy is the offset. One code, allocated at implementation; a
-mark on a body, a destination and a cast row all meet it.
+message; the remedy is the offset. One code, `DW0897` (`compiler::mark`); a
+mark on a body, a destination and a cast row all meet it. A camera position
+and a sound point are marks and are outside the rule: a dolly is placed where
+the framing wants it, and a shot of a building is taken from outside it.
 
 ### 5.4 The binding line
 
 `mark binding: B body site(s), M with a non-zero offset; D destination(s), N
 with a non-zero offset; C cast row(s) at a mark; R refused for leaving the
-piece` on every build, zeroes included — a campaign that writes no offset
-prints its zeros and reads as *checked*.
+piece (DW0897).` on every build, zeroes included — a campaign that writes no
+offset prints its zeros and reads as *checked*.
 
 ## 6. What the gallery, the record and the skill owe
 
 **Authored.**
 
-- **The gallery element** (spec-0039). The hall's usher and page
-  (`actor/hall-usher` on `anchor/usher`, `actor/hall-page` on `anchor/page`,
-  two point anchors the generator cuts side by side) become one anchor and two
-  marks, the page at an offset; the `move-actor` that walks the standard-
-  bearer to `anchor/vantage` walks it to a mark beside it; one cast row spells
-  a mark. Bound by perturbation: changing the page's offset moves the
-  coordinate triple in its `summon` line, and changing the destination offset
-  moves the last `tp` of the bearer's tick function. Units bound:
-  `Actor.offset`, `Npc.offset` (the marshal takes one), the destination
-  `to.offset` on both move verbs and `teleport`, the cast mark, and
-  `SoundAt::anchor.offset`.
+- **The gallery element** (spec-0039). The generator cuts `anchor/usher`
+  alone; `actor/hall-usher` stands on it and `actor/hall-page` at
+  `anchor/usher + [4, 0, 0]`. `npc/marshal` and `actor/sergeant` stand at
+  `anchor/muster + [1, 0, 0]`, one cell, so the handoff pair still shares its
+  cell, and the marshal's five cast rows naming his stand spell the mark. The
+  `move-actor` that walks the standard-bearer to `anchor/vantage` walks it to
+  `anchor/vantage + [2, 0, 0]`; the teleport lands at `anchor/vantage +
+  [-1, 0, 0]`; the chest-close sound plays at `anchor/pedestal + [0, 1, 0]`.
+  Bound by perturbation: changing the page's offset moves the coordinate
+  triple in its `summon` line, and changing the destination offset moves the
+  last `tp` of the bearer's tick function. Units bound, as the coverage gate
+  enumerates them from the schema: `Actor.offset`, `Npc.offset`,
+  `SoundAt::anchor.offset`, and `Mark.offset` — the one unit a destination's,
+  a cast row's and a camera's offset share, since they are one type.
 - **The probes.** `two-bodies-on-one-mark` stands as it is — replacing the
   page's anchor with the usher's, both offsets zero, is still one cell — and
-  its `why` gains the sentence that the remedy is now an offset. One new
-  probe for §5.3: the page's offset set to `[40, 0, 0]`, refused at `build`
-  with the new code.
+  its `why` names the offset as the remedy; its edit removes the page's
+  offset. One new probe for §5.3, `an-offset-out-of-the-room`: the page's
+  offset set to `[40, 0, 0]`, refused at `build` with `DW0897`.
 - **The record.** `docs/reference/compiler.md`: the `DW0896` row's
   prescription, the `DW0461` row's document arm, the surface rows for `Npc`,
   `Actor`, `move-npc`, `move-actor`, `teleport`, `cast`, `play-sound` and the
@@ -284,56 +302,71 @@ that object's class, not answered by copying the field.
 ## 8. Acceptance criteria
 
 Machine-checkable; each names its instrument, and each was checked against the
-tree at `495fca44` before being written. Where the tree cannot yet satisfy a
-criterion the verdict is recorded as a debt.
+tree at `495fca44` before being written. Each verdict states what the
+implementing tree measures.
 
 1. **One type.** `crates/dsl/src/stages.rs` declares `Mark {anchor, offset}`
    once; `CameraWaypoint`, `AnchorSubject` and `CameraTarget` are gone or are
    aliases of it; `tools/check-capability-ownership.py` check C reports no
    structural twin among them and its ledger entry is removed; the check's
-   binding count is printed and non-zero. *Tree: debt — three types, one
-   accepted entry.*
+   binding count is printed and non-zero. *Tree: met — the three types are
+   gone; check C examines 73 structs, matches 2 groups, 0 unjustified, and the
+   entry is removed.*
 2. **The surface.** `delvec schema --stage all` exports `offset` on `Npc` and
    `Actor`, `to` as an object with `anchor` and `offset` on `move-npc`,
    `move-actor` and `teleport`, the mark form of `cast[].at`, and `offset` on
    `SoundAt::anchor`; `to_anchor` appears nowhere in the export; under the
-   `dsl_version` the implementing round is handed. *Tree: debt.*
+   `dsl_version` the implementing round is handed. *Tree: met at 0.27.0 —
+   `offset` on `Npc` and `Actor`, `to` a `$ref` to `Mark` on all three verbs,
+   `CastPlace` carrying a `Mark` arm, `offset` on the `anchor` arm of
+   `SoundAt`, `to_anchor` 0 times.*
 3. **One resolution.** `Plan::body_point` returns the anchor's cell plus the
    offset; a test declares two actors on one anchor with offsets `[0,0,0]` and
    `[1,0,0]` and asserts two summon lines one block apart and no `DW0896`;
-   the same two with equal offsets assert `DW0896`. *Tree: debt.*
+   the same two with equal offsets assert `DW0896`. *Tree: met —
+   `crates/delvec/tests/mark.rs`.*
 4. **Destinations.** A test walks an actor to a mark two cells from its
    anchor and asserts the last `tp` of its tick function lands on that cell's
    centre; a destination mark inside solid geometry snaps as a destination
    anchor does today, asserted by the same test with the mark moved into a
-   wall. *Tree: debt.*
+   wall. *Tree: met — `crates/delvec/tests/mark.rs`; the in-wall case asserts
+   the walk's target equals `World::snap_standable_fp` of the mark's cell.*
 5. **The ledger.** A test declares a body at an offset and a cast row naming
    the bare anchor and asserts `DW0461`; the same row spelling the mark is
-   green. *Tree: debt.*
+   green. *Tree: met — `crates/delvec/tests/mark.rs`.*
 6. **The room.** A test sets an offset that reaches a cell outside
    `Plan::piece_bounds` of the anchor's piece and asserts the new code at
    build tier, naming the cell and the box; an offset reaching the piece's
-   last interior cell is green. *Tree: debt — the code is on no ref.*
+   last interior cell is green. *Tree: met — `crates/delvec/tests/mark.rs`,
+   `DW0897`; the green offset reaches the piece box's high corner.*
 7. **The remedy is reachable.** `remedy_reachability.rs` carries the row for
    `DW0896`'s offset move, ending green; the new code's own move (shorten the
-   offset) has a row ending green. *Tree: debt.*
+   offset) has a row ending green. *Tree: met — `dw0896_an_offset_apiece_from_one_anchor_ends_green`
+   and `dw0897_shortening_the_offset_ends_green` (§5.2's loosening).*
 8. **Cameras unchanged.** The gallery's cutscene emission is byte-identical
    before and after the type unification, asserted by the gallery baseline
    (`gallery/baseline/manifests.json` rows for the cutscene functions do not
    move in the implementing pull request except where §6's element moves
-   them, each attributed). *Tree: measured at implementation.*
+   them, each attributed). *Tree: met — building origin/main's gallery source
+   restamped with this engine moves no `cs_` row; `cs_tick_muster_3_2_12687a8f`
+   moves only with the marshal's offset and the bearer's destination, each
+   attributed in the baseline commit.*
 9. **The binding line.** Every build prints §5.4's line; the gallery primary
-   reports `M ≥ 1`, `N ≥ 1`, `C ≥ 1`. *Tree: debt.*
+   reports `M ≥ 1`, `N ≥ 1`, `C ≥ 1`. *Tree: met — the gallery primary
+   prints M = 3, N = 2, C = 5.*
 10. **The gallery.** §6's element builds green in every declared language;
     perturbing the page's offset moves its summon coordinate; the new probe
     is refused at build with the new code; `two-bodies-on-one-mark` is still
     refused with `DW0896`; `tools/check-gallery-coverage.py` reports 0 units in
-    neither state; two builds are byte-identical (ADR-0006). *Tree: debt.*
+    neither state; two builds are byte-identical (ADR-0006). *Tree: met — see
+    the implementing pull request's gate record.*
 11. **Determinism.** No consumer of a mark iterates a hash-ordered container;
-    the double-build gate is green. *Tree: debt.*
+    the double-build gate is green. *Tree: met — no hash-ordered container is
+    added; the double-build gate is green.*
 12. **The record and the skill.** The rows and pages of §6, in the pull
-    request that lands the code. *Tree: debt.*
-13. A demo-level row is queued when the code lands. *Tree: not yet due.*
+    request that lands the code. *Tree: met.*
+13. A demo-level row is queued when the code lands. *Tree: met — The
+    Muster.*
 
 ## 9. Decisions for the owner
 

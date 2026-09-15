@@ -2577,6 +2577,30 @@
       "note": "Carried from the castle round's ledger row and closed by spec-0065 on the tree that implements it. The general form above is spec-0065 §2's: an anchor role, no campaign-authored volume, and the exclusion inside the walk predicate. The check is `DW0510`'s furniture shape, asserted by `crates/delvec/tests/furniture.rs` (a route over a wall-to-wall table refused naming `anchor/high-table`, and the same walks for `move-npc` and `move-actor`; the same room routes with the declaration removed). Bound on the gallery, whose hall lays a seven-long `oak_fence`/`oak_slab[type=bottom]` table with a `spruce_slab` bench across `actor/standard-bearer`'s walk from `anchor/march` to `anchor/vantage` and declares it: `furniture binding: 1 region(s) over 7 solid cell(s), 7 standable cell(s) withheld from walking; 14 leg(s) proved, 0 standing on furniture` (gallery primary, `--prefabs` generated from `prefabs/gallery-generator` at this branch). Perturbed by deleting the anchor from the generated document with the blocks kept: the build still exits 0, the withheld count falls to 0, and `ma_tick_standard_bearer_vantage_*.mcfunction` changes from an eleven-sample walk round the table to a seven-sample walk that rises from y 67.0 to 69.0 over it — the released castle's instance, reproduced in the gallery. The binding, computed by `tools/staging-gate.py`'s own `probe()`, counts the routed walks a campaign declares: 5 on the gallery primary; 16 on the released castle as the castle round measured it.",
       "round": 1,
       "triage": "capability"
+    },
+    {
+      "binding": {
+        "files": [
+          "quests.json"
+        ],
+        "kind": "dsl",
+        "match": {
+          "prefix": {
+            "id": "actor/"
+          }
+        }
+      },
+      "campaign": "doune-castle-tour",
+      "carrier": {
+        "code": "DW0897",
+        "kind": "dw"
+      },
+      "finding": "a placed actor takes its position from an anchor and from nothing else, so a scene that wants several bodies standing in a rank has to spend one anchor per body",
+      "general_form": "a body the compiler stages declares its position as an anchor plus an integer block offset, the same declaration a camera station and a camera subject already carry, so the offset belongs to the class of things that have a body and a position rather than to the one verb that first wanted it — which is the same quantifier `body_sites` already walks for traversal and for skins",
+      "id": "doune-02",
+      "note": "Carried by spec-0066. A body declares its position as a mark — `anchor` plus an integer block `offset` — on `Npc` and `Actor` alike, the same `Mark` type a dolly waypoint, an aim target and an anchor subject are, and a `move-npc` / `move-actor` / `teleport` destination and a cast row take the same object; `Plan::body_point` adds the offset for every body `body_sites` walks. The carrier is `DW0897`, the rule that quantifies over every body mark, every destination and every cast row spelled as a mark, and refuses an offset that leaves the placed piece its anchor belongs to; its binding line prints on every build. Measured on the engine at this branch, against the released campaign at content `73182027db05e14d3a52a39e0c30fabd9025b9c0` (`quests.json` sha-256 `c86c22a25aeab486d759f8e45a5ae3927ccc39ffec942ce27a11471ace69d99f`), in a scratch copy restamped to this `dsl_version` with its destinations in the mark form: writing `\"offset\": [1, 0, 0]` on `actor/captain` validates with exit 0 against the prefabs at that revision. The binding, computed by `tools/staging-gate.py`'s own `probe()` over that `quests.json`, counts 7 actors, one anchor between them.",
+      "round": 1,
+      "triage": "capability"
     }
   ],
   "ledger_version": "2026-08-11"
