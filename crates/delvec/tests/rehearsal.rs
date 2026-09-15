@@ -590,12 +590,24 @@ fn the_camera_stamp_is_the_eye_in_fixed_point() {
     // dw.free keeps the place on a marker, force-loads only a chunk nothing else
     // forces, and restores the game mode it read.
     let leave = overlay(&out, "camera/free_leave");
-    assert!(leave.contains("data get entity @s playerGameType"), "{leave}");
-    assert!(leave.contains("execute store success score #forced dw.cm run forceload query ~ ~"), "{leave}");
+    assert!(
+        leave.contains("data get entity @s playerGameType"),
+        "{leave}"
+    );
+    assert!(
+        leave.contains("execute store success score #forced dw.cm run forceload query ~ ~"),
+        "{leave}"
+    );
     assert!(leave.ends_with("gamemode spectator @s\n"), "{leave}");
     let back = overlay(&out, "camera/free_back");
     for mode in ["survival", "creative", "adventure", "spectator"] {
-        assert!(back.contains(&format!("run gamemode {mode} @s")), "{mode}:\n{back}");
+        assert!(
+            back.contains(&format!("run gamemode {mode} @s")),
+            "{mode}:\n{back}"
+        );
     }
-    assert!(back.contains("tp @s @e[type=minecraft:marker,tag=dw_free_this,limit=1]"), "{back}");
+    assert!(
+        back.contains("tp @s @e[type=minecraft:marker,tag=dw_free_this,limit=1]"),
+        "{back}"
+    );
 }

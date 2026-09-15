@@ -312,7 +312,9 @@ fn camera_fns(ns: &str) -> Vec<(String, String)> {
 
     // --- dw.cam: runs `as <player> at <player>` -----------------------------
     let mut cam = vec![
-        format!("execute store result storage {storage} slot int 1 run scoreboard players get @s {CAMERA_TRIGGER}"),
+        format!(
+            "execute store result storage {storage} slot int 1 run scoreboard players get @s {CAMERA_TRIGGER}"
+        ),
         format!("scoreboard players reset @s {CAMERA_TRIGGER}"),
         format!("kill @e[type=minecraft:marker,tag={CAM_PROBE}]"),
         format!(
@@ -329,14 +331,18 @@ fn camera_fns(ns: &str) -> Vec<(String, String)> {
             "execute store result storage {storage} {key} int 1 run data get entity @s Rotation[{i}] 100"
         ));
     }
-    cam.push(format!("data modify storage {storage} in set value \"air\""));
+    cam.push(format!(
+        "data modify storage {storage} in set value \"air\""
+    ));
     cam.push(format!(
         "execute anchored eyes positioned ^ ^ ^ unless block ~ ~ ~ minecraft:air unless block ~ ~ ~ \
          minecraft:cave_air unless block ~ ~ ~ minecraft:void_air run data modify storage {storage} in \
          set value \"block\""
     ));
     cam.push(format!("kill @e[type=minecraft:marker,tag={CAM_PROBE}]"));
-    cam.push(format!("function {ns}:creator/camera/stamp with storage {storage}"));
+    cam.push(format!(
+        "function {ns}:creator/camera/stamp with storage {storage}"
+    ));
     fns.push((f("cam"), lines(&cam)));
     fns.push((
         f("stamp"),
@@ -389,11 +395,11 @@ fn camera_fns(ns: &str) -> Vec<(String, String)> {
     // Leave: a stale place of this player's (a body that left twice without
     // coming back) is dropped first, so one player holds one place.
     let leave = vec![
-        format!("execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"),
-        format!("kill @e[type=minecraft:marker,tag={FREE_THIS}]"),
         format!(
-            "summon minecraft:marker ~ ~ ~ {{Tags:[\"{FREE_HOME}\",\"{FREE_THIS}\"]}}"
+            "execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"
         ),
+        format!("kill @e[type=minecraft:marker,tag={FREE_THIS}]"),
+        format!("summon minecraft:marker ~ ~ ~ {{Tags:[\"{FREE_HOME}\",\"{FREE_THIS}\"]}}"),
         format!("tp {this} ~ ~ ~ ~ ~"),
         format!("scoreboard players operation {this} {FREE_ID} = #fid {CAM_OBJ}"),
         format!(
@@ -419,7 +425,9 @@ fn camera_fns(ns: &str) -> Vec<(String, String)> {
     }
     back.extend([
         format!("tp @s {this}"),
-        format!("execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"),
+        format!(
+            "execute as {this} at @s if score @s {FREE_LOADED} matches 1 run forceload remove ~ ~"
+        ),
         format!("kill @e[type=minecraft:marker,tag={FREE_THIS}]"),
         format!("tag @s remove {FREE_TAG}"),
     ]);

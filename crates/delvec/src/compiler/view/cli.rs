@@ -727,7 +727,10 @@ fn run_place_camera(
             return fail(
                 Diagnostic::error(
                     DW_INPUT,
-                    format!("{} is not there, so it has no camera `{name}`", record_path.display()),
+                    format!(
+                        "{} is not there, so it has no camera `{name}`",
+                        record_path.display()
+                    ),
                 ),
                 json,
                 exit::INPUT,
@@ -758,7 +761,10 @@ fn run_place_camera(
                 serde_json::from_slice(&read(report_path)?).map_err(|e| {
                     Diagnostic::error(
                         DW_INPUT,
-                        format!("parse {}: {e}. It is written by `delvec harvest`", report_path.display()),
+                        format!(
+                            "parse {}: {e}. It is written by `delvec harvest`",
+                            report_path.display()
+                        ),
                     )
                 })?;
             let Some(cam) = report.cameras.iter().find(|c| c.slot == slot) else {
@@ -769,7 +775,11 @@ fn run_place_camera(
                     format!(
                         "{} holds no pose on slot {slot}. Slots stamped: {}",
                         report_path.display(),
-                        if slots.is_empty() { "none".to_string() } else { slots.join(", ") }
+                        if slots.is_empty() {
+                            "none".to_string()
+                        } else {
+                            slots.join(", ")
+                        }
                     ),
                 ));
             };
