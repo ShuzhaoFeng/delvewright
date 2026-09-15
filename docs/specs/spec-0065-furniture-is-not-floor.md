@@ -1,6 +1,6 @@
 # spec-0065: Furniture is not floor
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Ground**: written against engine `93c9802e` (`origin/main`), read only, and
   against the released content revision `73182027` — `prefabs/doune-castle.json`
   (sha-256 `4857f90c69912802ea62c0abdddf1dcafa453c3eb75e12795a393a52c70069f9`)
