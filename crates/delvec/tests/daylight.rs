@@ -174,6 +174,40 @@ fn unhelmeted_zombie_under_open_sky_at_noon_is_dw0496() {
     );
 }
 
+/// **The `DW0496` / `DW0898` pair** (spec-0067 §4.2, criterion 12). A zombie
+/// horse burns in daylight and its body draws no head slot, so the head piece
+/// the zombie is prescribed would itself be refused. The prescription is read
+/// from the body table: roofing, and never `equipment.head`. The zombie, whose
+/// body draws a head, is prescribed both.
+#[test]
+fn the_prescription_names_a_head_piece_only_for_a_body_that_shows_one() {
+    let tmp = TempCampaign::new("zombie-horse");
+    campaign_with(tmp.path(), true, |_, quests| {
+        set_mobs(
+            quests,
+            serde_json::json!([
+                { "entity": "minecraft:zombie_horse", "count": 1, "name": "The Dead Destrier" }
+            ]),
+        );
+    });
+    let err = build(tmp.path()).expect_err("a zombie horse burns under open sky at noon");
+    assert_eq!(code_of(&err), "DW0496", "{}", message_of(&err));
+    let horse = message_of(&err);
+    assert!(horse.contains("Roof the ground"), "names roofing: {horse}");
+    assert!(
+        !horse.contains("Give this stack `equipment.head`"),
+        "prescribes no head piece to a body that shows none: {horse}"
+    );
+
+    let tmp = TempCampaign::new("zombie-pair");
+    campaign_with(tmp.path(), true, |_, _| {});
+    let zombie = message_of(&build(tmp.path()).expect_err("the zombie burns"));
+    assert!(
+        zombie.contains("Give this stack `equipment.head`") && zombie.contains("roof the ground"),
+        "the zombie is prescribed both remedies: {zombie}"
+    );
+}
+
 // --- green: the two sanctioned remedies -------------------------------------
 
 /// The owner-sanctioned fix, and the one `hollow-vigil` shipped: a helmet.

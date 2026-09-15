@@ -27,8 +27,8 @@ use crate::compiler::plan::{
 use crate::compiler::{DELVEC_VERSION, MC_VERSION, PACK_FORMAT};
 
 use delvewright_dsl::{
-    CompareOp, EquipItem, Gate, MobEquipment, Objective, QuestEffect, StateCompare, StateId,
-    StateScope, Trigger,
+    CompareOp, EquipItem, EquipSlot, Gate, MobEquipment, Objective, QuestEffect, StateCompare,
+    StateId, StateScope, Trigger,
 };
 use delvewright_dsl::{DwCode, ExitTier};
 
@@ -2741,12 +2741,17 @@ fn has_item_drop(drops: &[delvewright_dsl::MobDrop]) -> bool {
 /// Two intended vanilla primitives, composed: `execute as … run data merge
 /// entity @s` (single-entity by construction, which is what `data merge`
 /// requires) writing drop chance 0 on every slot and an empty death loot table.
-/// Emitted only for an actor that declares drops, so every earlier campaign's
-/// removal is byte-identical.
+/// Emitted only for an actor that declares drops. One `drop_chances` key per
+/// slot of [`EquipSlot::ALL`], so a slot the DSL gains is stripped with no edit
+/// here.
 fn strip_drops_line(tag: &str) -> String {
+    let zeros: Vec<String> = EquipSlot::ALL
+        .iter()
+        .map(|s| format!("{}:{NO_DROP_CHANCE}", s.nbt()))
+        .collect();
     format!(
-        "execute as @e[tag={tag}] run data merge entity @s {{drop_chances:{{mainhand:{z},offhand:{z},head:{z},chest:{z},legs:{z},feet:{z}}},DeathLootTable:\"minecraft:empty\"}}",
-        z = NO_DROP_CHANCE
+        "execute as @e[tag={tag}] run data merge entity @s {{drop_chances:{{{}}},DeathLootTable:\"minecraft:empty\"}}",
+        zeros.join(",")
     )
 }
 
@@ -2759,8 +2764,8 @@ fn strip_drops_line(tag: &str) -> String {
 /// name carries drop chance 0: players must never farm wave gear (no-grind
 /// constitution); a named slot carries [`DECLARED_DROP_CHANCE`]. Component-era
 /// form only — see [`default_equipment`] for why legacy `ArmorItems`/
-/// `HandItems` are silently ignored by 1.21.11 `/summon`. Slot order is fixed
-/// (mainhand, offhand, head, chest, legs, feet) for ADR-0006 determinism.
+/// `HandItems` are silently ignored by 1.21.11 `/summon`. Slot order is
+/// [`EquipSlot::ALL`]'s, fixed for ADR-0006 determinism.
 fn wave_equipment(
     entity: &str,
     eq: Option<&MobEquipment>,
@@ -2773,42 +2778,20 @@ fn wave_equipment(
     };
     // The main-hand slot is the one place a DEFAULT (a bare id, no enchantments)
     // can stand in for an authored piece, so it carries an id plus an optional
-    // authored piece; the other five are authored or absent.
-    let slots: [(&str, Option<&str>, Option<&EquipItem>); 6] = [
-        ("mainhand", mainhand, eq.main_hand.as_ref()),
-        (
-            "offhand",
-            eq.off_hand.as_ref().map(EquipItem::item),
-            eq.off_hand.as_ref(),
-        ),
-        (
-            "head",
-            eq.head.as_ref().map(EquipItem::item),
-            eq.head.as_ref(),
-        ),
-        (
-            "chest",
-            eq.chest.as_ref().map(EquipItem::item),
-            eq.chest.as_ref(),
-        ),
-        (
-            "legs",
-            eq.legs.as_ref().map(EquipItem::item),
-            eq.legs.as_ref(),
-        ),
-        (
-            "feet",
-            eq.feet.as_ref().map(EquipItem::item),
-            eq.feet.as_ref(),
-        ),
-    ];
+    // authored piece; every other slot is authored or absent.
     let mut items: Vec<String> = Vec::new();
     let mut chances: Vec<String> = Vec::new();
-    for (slot, item, piece) in slots {
+    for (slot, piece) in eq.pieces() {
+        let item = if slot == EquipSlot::MainHand {
+            mainhand
+        } else {
+            piece.map(EquipItem::item)
+        };
         if let Some(it) = item {
+            let key = slot.nbt();
             let comps = piece.map(enchantment_components).unwrap_or_default();
-            items.push(format!("{slot}:{{id:\"{it}\",count:1{comps}}}"));
-            chances.push(format!("{slot}:{}", drop_chance_for(slot, &declared)));
+            items.push(format!("{key}:{{id:\"{it}\",count:1{comps}}}"));
+            chances.push(format!("{key}:{}", drop_chance_for(key, &declared)));
         }
     }
     if items.is_empty() {
@@ -9846,20 +9829,14 @@ fn actor_equipment(a: &delvewright_dsl::Actor, body: &str) -> Option<String> {
     let declared = declared_drop_slots(&a.drops);
     let mut items: Vec<String> = Vec::new();
     let mut chances: Vec<String> = Vec::new();
-    // Fixed emission order, matching the wave path (ADR-0006 determinism).
-    let slots: [(&str, Option<&EquipItem>); 6] = [
-        ("mainhand", eq.main_hand.as_ref()),
-        ("offhand", eq.off_hand.as_ref()),
-        ("head", eq.head.as_ref()),
-        ("chest", eq.chest.as_ref()),
-        ("legs", eq.legs.as_ref()),
-        ("feet", eq.feet.as_ref()),
-    ];
-    for (slot, piece) in slots {
+    // Fixed emission order, [`EquipSlot::ALL`]'s, matching the wave path
+    // (ADR-0006 determinism).
+    for (slot, piece) in eq.pieces() {
         if let Some(p) = piece {
+            let key = slot.nbt();
             let comps = enchantment_components(p);
-            items.push(format!("{slot}:{{id:\"{}\",count:1{comps}}}", p.item()));
-            chances.push(format!("{slot}:{}", drop_chance_for(slot, &declared)));
+            items.push(format!("{key}:{{id:\"{}\",count:1{comps}}}", p.item()));
+            chances.push(format!("{key}:{}", drop_chance_for(key, &declared)));
         }
     }
     if items.is_empty() {
@@ -15030,21 +15007,18 @@ fn emit_one_actor_equipment_packtest(
 ) {
     let ns = &plan.namespace;
     let title = artifact_title(plan.campaign);
-    // The slot the assertion reads: prefer a hand, else the first armour piece.
+    // Every slot the actor fills is asserted on both bodies: the live proof that
+    // the pinned server stores each key the summon writes (spec-0067 §3 —
+    // `body` and `saddle` included).
     let eq = a.equipment.as_ref().expect("filtered on Some");
-    let probe: Option<(&str, &EquipItem)> = [
-        ("mainhand", eq.main_hand.as_ref()),
-        ("offhand", eq.off_hand.as_ref()),
-        ("head", eq.head.as_ref()),
-        ("chest", eq.chest.as_ref()),
-        ("legs", eq.legs.as_ref()),
-        ("feet", eq.feet.as_ref()),
-    ]
-    .into_iter()
-    .find_map(|(slot, p)| p.map(|p| (slot, p)));
-    let Some((slot, piece)) = probe else {
+    let filled: Vec<(&str, &EquipItem)> = eq
+        .pieces()
+        .into_iter()
+        .filter_map(|(slot, p)| p.map(|p| (slot.nbt(), p)))
+        .collect();
+    if filled.is_empty() {
         return;
-    };
+    }
     let safe = plan::safe_local(a.id.as_str());
     let mut b = packtest_header(&format!(
         "{title}: actor `{}`, a {body}, keeps its gear across unleash (spec-0021)",
@@ -15054,18 +15028,22 @@ fn emit_one_actor_equipment_packtest(
     // Clean slate: the shared batch server may already carry this actor.
     b.push(format!("kill @e[tag=dw_actor_{safe}]"));
     b.push(format!("function {ns}:spawn_actor_{safe}"));
-    b.push(format!(
-        "execute store success score #aeqp dw.sys if data entity @e[tag=dw_pup_{safe},limit=1] equipment.{slot}{{id:\"{}\"}}",
-        piece.item()
-    ));
-    b.push("assert score #aeqp dw.sys matches 1".to_string());
+    for (slot, piece) in &filled {
+        b.push(format!(
+            "execute store success score #aeqp dw.sys if data entity @e[tag=dw_pup_{safe},limit=1] equipment.{slot}{{id:\"{}\"}}",
+            piece.item()
+        ));
+        b.push("assert score #aeqp dw.sys matches 1".to_string());
+    }
     b.push(format!("function {ns}:unleash_{safe}"));
     // The twin is the actor-tagged entity that is NOT the puppet.
-    b.push(format!(
-        "execute store success score #aeqt dw.sys if data entity @e[tag=dw_actor_{safe},tag=!dw_pup_{safe},limit=1] equipment.{slot}{{id:\"{}\"}}",
-        piece.item()
-    ));
-    b.push("assert score #aeqt dw.sys matches 1".to_string());
+    for (slot, piece) in &filled {
+        b.push(format!(
+            "execute store success score #aeqt dw.sys if data entity @e[tag=dw_actor_{safe},tag=!dw_pup_{safe},limit=1] equipment.{slot}{{id:\"{}\"}}",
+            piece.item()
+        ));
+        b.push("assert score #aeqt dw.sys matches 1".to_string());
+    }
     b.push(format!("kill @e[tag=dw_actor_{safe}]"));
     // The body is in the name, so a campaign that dresses two kinds gets two
     // files rather than one overwriting the other. The namespace colon is
@@ -21404,6 +21382,8 @@ mod tests {
             feet: None,
             main_hand: Some(EquipItem::Plain("minecraft:netherite_sword".to_string())),
             off_hand: None,
+            body: None,
+            saddle: None,
         });
         a.attributes = Some(delvewright_dsl::MobAttributes {
             max_health: Some(40.0),
@@ -21742,7 +21722,74 @@ mod loot_emit_tests {
                     .collect(),
             })),
             off_hand: None,
+            body: None,
+            saddle: None,
         }
+    }
+
+    /// A horse barded and saddled (spec-0067 criterion 7): both new keys ride
+    /// the summon's `equipment` compound, each at drop chance 0 unless a drop
+    /// names it (criterion 13).
+    #[test]
+    fn a_barded_and_saddled_horse_carries_body_and_saddle_keys() {
+        use delvewright_dsl::EquipItem;
+        let mut a = actor_with(Some(delvewright_dsl::MobEquipment {
+            head: None,
+            chest: None,
+            legs: None,
+            feet: None,
+            main_hand: None,
+            off_hand: None,
+            body: Some(EquipItem::Plain("minecraft:iron_horse_armor".to_string())),
+            saddle: Some(EquipItem::Plain("minecraft:saddle".to_string())),
+        }));
+        a.entity = "minecraft:horse".to_string();
+        for s in [
+            actor_puppet_summon("dw", &a, [1, 2, 3], 0),
+            actor_twin_summon("dw", &a, "~ ~ ~"),
+        ] {
+            assert!(
+                s.contains(
+                    "equipment:{body:{id:\"minecraft:iron_horse_armor\",count:1},\
+                     saddle:{id:\"minecraft:saddle\",count:1}}"
+                ),
+                "{s}"
+            );
+            assert!(s.contains("drop_chances:{body:0.0f,saddle:0.0f}"), "{s}");
+        }
+        a.tier = Some(delvewright_dsl::EncounterTier::Boss);
+        a.drops = vec![delvewright_dsl::MobDrop::Slot(delvewright_dsl::SlotDrop {
+            slot: EquipSlot::Saddle,
+        })];
+        let twin = actor_twin_summon("dw", &a, "~ ~ ~");
+        assert!(
+            twin.contains(&format!(
+                "drop_chances:{{body:0.0f,saddle:{DECLARED_DROP_CHANCE}}}"
+            )),
+            "a declared saddle drop is guaranteed: {twin}"
+        );
+    }
+
+    /// The drop-strip line zeroes one `drop_chances` key per slot of
+    /// [`EquipSlot::ALL`] (spec-0067 criterion 1).
+    #[test]
+    fn the_strip_line_zeroes_every_slot_the_game_has() {
+        let line = strip_drops_line("dw_actor_x");
+        let inner = line
+            .split("drop_chances:{")
+            .nth(1)
+            .and_then(|r| r.split('}').next())
+            .expect("the strip line writes a drop_chances compound");
+        let keys: Vec<&str> = inner
+            .split(',')
+            .map(|kv| kv.split(':').next().unwrap())
+            .collect();
+        assert_eq!(keys.len(), EquipSlot::ALL.len(), "{line}");
+        assert_eq!(
+            keys,
+            EquipSlot::ALL.iter().map(|s| s.nbt()).collect::<Vec<_>>(),
+            "{line}"
+        );
     }
 
     /// An actor WITHOUT equipment must emit exactly what it did before the field

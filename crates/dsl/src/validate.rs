@@ -3401,6 +3401,10 @@ fn v06_checks(
         );
     }
 
+    // spec-0067: every piece is put where the pinned game shows it on the body
+    // that wears it (`DW0898`).
+    crate::equipment::fit_checks(c, items, d);
+
     // Declared drops — the subset an elite/boss leaves behind.
     check_drops(c, quests, items, d);
 
