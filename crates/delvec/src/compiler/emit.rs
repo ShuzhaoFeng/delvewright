@@ -13702,6 +13702,22 @@ fn emit_packtest(
     // the objective scoreboard. Emits nothing for a v0.2 campaign.
     emit_verb_packtests(plan, out);
 
+    // The hand camera (spec-0069): the creator overlay stamps an eye and a
+    // rotation, and takes a body out of itself and back. Every campaign emits the
+    // overlay, so every suite proves it; the PackTest server loads
+    // `creator-datapack/` beside this suite for exactly these templates.
+    let column = plan
+        .areas
+        .first()
+        .map(|a| {
+            let (min, _) = a.bounds();
+            [min[0], min[2]]
+        })
+        .unwrap_or([0, 0]);
+    for (path, body) in crate::compiler::creator::packtests(ns, artifact_title(c), column) {
+        out.insert(path, body.into_bytes());
+    }
+
     // The dialogue trigger must survive a second use with NO tick in between —
     // the singleplayer pause-freeze contract. Emits nothing for a campaign with no
     // terminal dialogue option.

@@ -127,7 +127,16 @@ Methodology; CI enforces the DW-code subset — see `tools/check-dw-codes.py`).
   were read off the pinned server rather than a wiki. Judged only where all four
   coordinates are plain integers, so a relative coordinate is left to the server
   like every other value. The emission side is under **forceload lifecycle**
-  below. `delvec prefab`'s gallery is the
+  below.
+  **A chat message's length** is a parse bound, and the walk applies it: a
+  `minecraft:message` argument (`say`, `me`, `msg`, `teammsg`) holds at most
+  `MESSAGE_MAX_CHARS` (256) characters, counted as the server counts them, and a
+  longer one makes 1.21.11 refuse the WHOLE function at load — "Chat message was
+  too long (707 > maximum 256 characters)", measured on the creator overlay's
+  shot roster the first time a PackTest server loaded it. The line is refused
+  naming its length. A macro line is judged on its literal text with each
+  `$(name)` counted as nothing: a floor, which a substituted value can still
+  carry past the bound at run time. `delvec prefab`'s gallery is the
   second consumer of this validator: it emits `.mcfunction` into a datapack
   exactly as `delvec` does, so it now runs the same tree over its own output
   before writing anything (`gallery::validate_functions`, `DW0760`) rather than
@@ -2706,6 +2715,19 @@ and `minecraft:`-prefixed forms both rejected). Emitted sealing commands
   moved — that eye IS the player's — so a `pov` violation stays a build error
   against the derivation. The plan carries the proof's binding counts:
   `"camera_eye_proof": {"cameras": N, "pulled_in": M}`.
+- **Every showcase camera photographs the scene** (`DW0724`, second shape;
+  spec-0069). When the campaign has `design/cameras.json` (read by the loader,
+  hashed into the manifest's inputs), `render_plan` proves each of its cameras
+  after the plan's own: the lens cell is clear by the same `World::is_clear`, the
+  lens lies within the world's build height (−64..320), and the ray along its
+  view meets the box the scene's chunk list is cut from
+  (`scene::loaded_extent`, widened to whole blocks), read back through the plan
+  just built. A showcase camera is not a plan shot — `delvec cameras` emits its
+  scene from the record — so nothing moves it: a violation refuses the build
+  naming the row, telling a hand camera to be placed again (`/trigger dw.cam`)
+  and an estimate to be moved, and never the geometry. A record its reader
+  refuses stops the build as `DW0721` (exit 3). The count is
+  `camera_eye_proof.showcase`, present only when the record is.
 - **`sky` fact** (`crate::render_plan::sky_fact`): **the hour this delve is
   played at**, stated for the render layer exactly as `horizon` is —
   `{"time": "dusk", "daytime_ticks": 12000}`, the keyword the author wrote plus
@@ -6009,7 +6031,7 @@ class and not one bug.
 
 | Code | Meaning |
 |------|---------|
-| `DW0497` | **The compiler emitted a `function <ns>:<name>` call to a function it never emitted.** Build-tier (exit 3), `compiler::integrity::check_tree`, run last, over the finished output tree — beside the affordance-hardware self-check, and on the same principle: judge the commands that ship, not the intent behind them. **The class.** Nearly every verb compiles in two halves — the *call site*, lowered from the effect tree wherever the author put the verb, and the *machinery*, emitted from a per-feature registration walk. When those two walks disagree about what exists, the call site still emits, vanilla resolves an unknown function to nothing at all (no error, no log line, nothing a bot can observe), and the verb simply never happens. **The motivating build** is the island's round 21: `wave/storm-surf` was fired from a top-level effect chain and got its full machinery; `wave/storm-shore` and `wave/storm-fire` were fired from step 7 of a `sequence`, and the wave emitter — which resolved a wave's area only from top-level chains — produced no `spawn_…`, no census, no brand, no kill reward for either, while `seq_under_ram` shipped `function nobodys-cave-island:spawn_storm_shore` all the same. Two of three storm waves never spawned; every build-tier proof was green, and the only thing that noticed was the compiler's own generated census PackTest — which walks `waves[]` rather than the effect tree — failing on a live server four minutes into a ladder run. Landing this check surfaced a **second, independent instance** immediately: `spawn-npc` on a non-`deferred` NPC compiled `function <ns>:spawn_npc_<id>` against a function only ever emitted for `deferred` NPCs, so a character brought back after a `despawn-npc` stayed gone. **Model:** every emitted `.mcfunction` in every tree is scanned for calls in command position — bare, after `run`, after `schedule` — and each target in the campaign's own namespace must name an emitted `data/<ns>/function/**` body. Deliberately **feature-blind**: the rule is "a call has a callee", which needs no knowledge of waves or NPCs and therefore guards emitters not yet written. Scope: the campaign's own namespace only (`minecraft:…` belongs to a tree this compiler does not emit); functions, not function tags (`function #<ns>:<tag>` is skipped, tag membership being a separate artifact); and **tiered** — the shipped `datapack/` ships alone (ADR-0010) so it may only call itself, while `packtest-datapack/` and `creator-datapack/` load beside it and may call their own tier or the shipped one. PackTest `test/` bodies are callers but never callees. The message lists every dangling call with its artifact path, line number, the whole command, and the missing target. Prescription: **fix the emitter** so its call walk and its machinery walk derive from one traversal — this is a compiler defect, never content. Never silence it by deleting the call site: the call is what the author asked for. |
+| `DW0497` | **The compiler emitted a `function <ns>:<name>` call to a function it never emitted.** Build-tier (exit 3), `compiler::integrity::check_tree`, run last, over the finished output tree — beside the affordance-hardware self-check, and on the same principle: judge the commands that ship, not the intent behind them. **The class.** Nearly every verb compiles in two halves — the *call site*, lowered from the effect tree wherever the author put the verb, and the *machinery*, emitted from a per-feature registration walk. When those two walks disagree about what exists, the call site still emits, vanilla resolves an unknown function to nothing at all (no error, no log line, nothing a bot can observe), and the verb simply never happens. **The motivating build** is the island's round 21: `wave/storm-surf` was fired from a top-level effect chain and got its full machinery; `wave/storm-shore` and `wave/storm-fire` were fired from step 7 of a `sequence`, and the wave emitter — which resolved a wave's area only from top-level chains — produced no `spawn_…`, no census, no brand, no kill reward for either, while `seq_under_ram` shipped `function nobodys-cave-island:spawn_storm_shore` all the same. Two of three storm waves never spawned; every build-tier proof was green, and the only thing that noticed was the compiler's own generated census PackTest — which walks `waves[]` rather than the effect tree — failing on a live server four minutes into a ladder run. Landing this check surfaced a **second, independent instance** immediately: `spawn-npc` on a non-`deferred` NPC compiled `function <ns>:spawn_npc_<id>` against a function only ever emitted for `deferred` NPCs, so a character brought back after a `despawn-npc` stayed gone. **Model:** every emitted `.mcfunction` in every tree is scanned for calls in command position — bare, after `run`, after `schedule` — and each target in the campaign's own namespace must name an emitted `data/<ns>/function/**` body. Deliberately **feature-blind**: the rule is "a call has a callee", which needs no knowledge of waves or NPCs and therefore guards emitters not yet written. Scope: the campaign's own namespace only (`minecraft:…` belongs to a tree this compiler does not emit); functions, not function tags (`function #<ns>:<tag>` is skipped, tag membership being a separate artifact); and **tiered** — the shipped `datapack/` ships alone (ADR-0010) so it may only call itself, while `packtest-datapack/` and `creator-datapack/` load beside it and may call their own tier or the shipped one, and a PackTest body may also call a creator function (the PackTest server loads the overlay) — never the reverse. PackTest `test/` bodies are callers but never callees. The message lists every dangling call with its artifact path, line number, the whole command, and the missing target. Prescription: **fix the emitter** so its call walk and its machinery walk derive from one traversal — this is a compiler defect, never content. Never silence it by deleting the call site: the call is what the author asked for. |
 
 ### DW0185 — untranslated player-visible literal (`compiler::emit`; error; exit 3)
 
@@ -6188,10 +6210,10 @@ the rule's domain is the more useful thing for the number to say.
 | `DW0702` | `delvec schem` | Source `DataVersion` ≠ pinned MC 1.21.11. |
 | `DW0710` | `delvec schem` | Input unreadable / not a Sponge schematic. |
 | `DW0720` | `delvec render` | Missing-texture (magenta) placeholder detected (fidelity gate; exit 4). |
-| `DW0721` | `delvec render` | Input (`.nbt`/metadata/`render-plan.json`/`design/cameras.json`) unreadable, a `cameras` record that breaks its rules (§7, `delvec cameras`), a `panorama --subject` anchor the build did not resolve, a `scene`/`panorama`/`cameras` world save that is not there (no `level.dat` or no region file in `--world`, default `<build-dir>/world`; Chunky would render it as an empty frame at exit 0), or a `--view` that cannot be rendered as asked (exit 2). A declared view is refused **before any frame**: a malformed spec, a bearing given twice or not at all, a subject the piece does not declare (the message lists the anchors it does), or a name a planned shot already holds — which would overwrite that shot's image and quietly regress a review set. A view is never dropped or silently re-aimed: a set missing the one camera the reviewer asked for still looks complete in a directory listing. |
+| `DW0721` | `delvec render` | Input (`.nbt`/metadata/`render-plan.json`/`design/cameras.json`) unreadable, a `cameras` record that breaks its rules (§7, `delvec cameras`; the same refusal stops `delvec build`, exit 3, since the build reads the record), a `place-camera` write the record refuses (an estimate over a `hand` row, a new hand row without `--answers`, another row's `answers`, a slot the report does not hold), a `panorama --subject` anchor the build did not resolve, a `scene`/`panorama`/`cameras` world save that is not there (no `level.dat` or no region file in `--world`, default `<build-dir>/world`; Chunky would render it as an empty frame at exit 0), or a `--view` that cannot be rendered as asked (exit 2). A declared view is refused **before any frame**: a malformed spec, a bearing given twice or not at all, a subject the piece does not declare (the message lists the anchors it does), or a name a planned shot already holds — which would overwrite that shot's image and quietly regress a review set. A view is never dropped or silently re-aimed: a set missing the one camera the reviewer asked for still looks complete in a directory listing. |
 | `DW0722` | `delvec render` | Output file could not be written (exit 3). |
 | `DW0723` | `delvec render` | GPU renderer failed / textures absent (exit 5). |
-| `DW0724` | `delvec` (visual tier) | **A render-plan camera's eye cell is occupied** (solid/water) in the FINAL assembled world — the frame would render the inside of a block, and a picture of the inside of a block is indistinguishable from a picture of a featureless room. `compiler::nav::verify_camera_eyes`, over **every** shot the plan holds: `spawn`, `interior`, `seam`, `npc`, `interact`, `gate` and `pov`. It is bound at the derivation, not at a call site — `render_plan::render_plan` is the only constructor of a plan document and it takes the world, and every kind enters the shot list through one `push` that records the eye from the same position it writes into the camera, so a kind added later is covered without anyone remembering. (It was bound to `pov` alone, which is the kind that happened to need it first; the identical defect on a seam camera standing inside a hung ceiling lantern was invisible to every build in the repository.) Two verdicts, decided by the object rather than by the author. **`pov`** is the player's own eye, 1.62 above a DW0314-proven-standable waypoint, so it is clear by construction and is never moved: a violation there is the derivation changing (or a later pass mutating the cell) and fails the build (exit 3) — fix the derivation, never the waypoint or the geometry. **Every other kind** states a fixed stand-off from a subject it frames, which is a preference and not a position: a camera whose own cell holds a block stands instead at the furthest clear point on its own sight line (`compiler::camera::stand_in_open_air`) and records `camera.requested_pos` + `camera.standoff` on its shot, because a displaced camera is invisible in its own frame. It yields to that one fact and nothing else — an interior shot's dollhouse eye is deliberately above the piece and is not pulled through the roof it looks past. The error survives for those kinds too: it fires when even the subject's own cell is buried, so there is no vantage on the sight line at all. Every plan states the proof's binding counts (`camera_eye_proof`: `cameras` examined, `pulled_in`), and a plan holding zero cameras is a warning under the same code rather than a silent pass. Numbered in the `DW072x` visual/render range. Scale, measured over every campaign and fixture that builds before this binding existed: **204 of 752 cameras stood inside a block** — 144 seam, 38 gate, 16 NPC, 6 interact, 0 POV — and every one of the 27 campaigns had at least one. |
+| `DW0724` | `delvec` (visual tier) | **A render-plan camera's eye cell is occupied** (solid/water) in the FINAL assembled world — the frame would render the inside of a block, and a picture of the inside of a block is indistinguishable from a picture of a featureless room. `compiler::nav::verify_camera_eyes`, over **every** shot the plan holds: `spawn`, `interior`, `seam`, `npc`, `interact`, `gate` and `pov`. It is bound at the derivation, not at a call site — `render_plan::render_plan` is the only constructor of a plan document and it takes the world, and every kind enters the shot list through one `push` that records the eye from the same position it writes into the camera, so a kind added later is covered without anyone remembering. (It was bound to `pov` alone, which is the kind that happened to need it first; the identical defect on a seam camera standing inside a hung ceiling lantern was invisible to every build in the repository.) Two verdicts, decided by the object rather than by the author. **`pov`** is the player's own eye, 1.62 above a DW0314-proven-standable waypoint, so it is clear by construction and is never moved: a violation there is the derivation changing (or a later pass mutating the cell) and fails the build (exit 3) — fix the derivation, never the waypoint or the geometry. **Every other kind** states a fixed stand-off from a subject it frames, which is a preference and not a position: a camera whose own cell holds a block stands instead at the furthest clear point on its own sight line (`compiler::camera::stand_in_open_air`) and records `camera.requested_pos` + `camera.standoff` on its shot, because a displaced camera is invisible in its own frame. It yields to that one fact and nothing else — an interior shot's dollhouse eye is deliberately above the piece and is not pulled through the roof it looks past. The error survives for those kinds too: it fires when even the subject's own cell is buried, so there is no vantage on the sight line at all. Every plan states the proof's binding counts (`camera_eye_proof`: `cameras` examined, `pulled_in`), and a plan holding zero cameras is a warning under the same code rather than a silent pass. **Second shape — every showcase camera of `design/cameras.json`** (spec-0069): its lens cell is clear, its lens is inside the build height, and its view ray meets the scene's loaded extent; a showcase camera is never moved, so each violation refuses (exit 3) naming the row, with `camera_eye_proof.showcase` its count. Numbered in the `DW072x` visual/render range. Scale, measured over every campaign and fixture that builds before this binding existed: **204 of 752 cameras stood inside a block** — 144 seam, 38 gate, 16 NPC, 6 interact, 0 POV — and every one of the 27 campaigns had at least one. |
 | `DW0725` | `delvec render` | **Contact-sheet ordering is not a total order over the candidates** — indices dropped, duplicated or out of range (exit 10). The score RANKS the sheet and NEVER gates it (spec-0028 §3): cross-domain calibration between a painterly reference image and a voxel render is unproven, so a similarity number may decide where a candidate sits on the page and never whether it is on the page. `sheet::build_sheet` puts whatever its ordering function returns through `sheet::verify_total_order` before drawing a pixel, so every way rank-only can erode — a threshold shortening the order, a "best of" repeating an index, an off-by-one losing the last cell — lands here as one refusal instead of a silently shorter page. Promoting the score to a threshold requires its own owner-approved amendment backed by accumulated batch data; do not add one to satisfy this diagnostic. |
 | `DW0726` | `delvec render` | A contact sheet's score set bound to fewer candidates than the sheet holds. **Zero binding is an error** (exit 2) — nothing was ranked, and a score file that matched no candidate must not read as a successful ranking run (CLAUDE.md: a green gate that binds to nothing is vacuous, not a pass). A partial binding is a **warning** naming the counts; the unscored candidates stay on the page, last, labelled unscored — a missing measurement is not a bad one. Score rows matching no candidate warn under the same code (usually an id typo or a stale run). |
 | `DW0727` | `delvec render` | **An anchor's eye-level camera is not standing on the anchor's own cell**, or could not be stood up at all (warning; `piece`/`batch` still write every other shot). The per-prefab eye shots are the only cameras inside a piece, and a prefab is mostly solid — the motivating ward was 81% rock with an anchor inside a bank of iron bars — so an eye point taken from an anchor position alone lands inside a block often enough that assuming it would put a picture of the inside of a block in a review set, indistinguishable from a picture of a room. Three tiers, one code, because they are one fact the reviewer needs (*where is the body in this frame*): the camera **stepped back** along the facing to a cell where a body fits, naming the block that displaced it and the offset; **no body cell** was found within 3 blocks with the anchor still in front of it, so that anchor gets no eye shot at all; or the frame rendered **empty** — nothing but flat background, meaning the camera is aimed at nothing (measured on the pixels, `detect::is_featureless`, not inferred from geometry). The empty-frame tier is a property of a rendered frame, not of one camera kind, so it covers every shot in the set and says which one it is talking to: an anchor aimed at nothing or out of the piece, an author-declared `--view` whose zoom or cutaway left the model out of frame (the message repeats the spec, bearing and zoom that produced it), or a fitted planned shot with nothing to fit. Every case also rides `<stem>-shots.json`, since a displaced camera is invisible in its own frame. Fix the anchor's facing or the piece's geometry; never move the camera to make the picture nicer. Zero eye shots over one or more eye-eligible anchors is reported under the same code — a review set with no interior view cannot judge the scene, which is the whole job of `prefab-procedure.md` §5. |
@@ -7002,9 +7024,12 @@ delvec cameras <build-dir> --campaign <campaign-dir> -o <dir>
 cameras; `compiler::view::camera` is its one reader. Per camera: `name`,
 `answers` (a `design.json` row), `pos` (the lens, world blocks), `yaw`/`pitch`
 in the `--camera` convention above, vertical `fov`, `exposure`, `width`,
-`height`, `spp`. Keys are alphabetical, so the record a tool writes is already
-canonical. The record is not a stage document: nothing in it reaches the build,
-the datapack or `render-plan.json`, and the build's bytes do not depend on it.
+`height`, `source` (`estimated` or `hand`), `spp`. Keys are alphabetical, so the
+record a tool writes is already canonical. The record is not a stage document
+and reaches neither the datapack nor the plan's shots; `delvec build` reads it
+as a hashed input and proves every camera in it (`DW0724`, above), so the only
+bytes of the build it moves are `manifest.json`'s input hash and
+`render-plan.json`'s `camera_eye_proof.showcase`.
 
 Emission writes one Chunky scene per camera (`<campaign>_camera_<name>.json`)
 against a build's `render-plan.json`: the camera verbatim, rounded to six
@@ -7023,7 +7048,8 @@ many approved images have a camera and names the rest.
 `--bracket` appends, after each camera, the camera moved one field by one step
 each way (`dolly` along the heading, `truck` to the frame's right, `rise` up),
 skipping any candidate outside the legal ranges, and writes every emitted camera
-to `candidates.json` in the record format. `--draft` divides the frame by 4 and
+to `candidates.json` in the record format; a moved candidate is `estimated`
+whatever its camera was. `--draft` divides the frame by 4 and
 caps samples at 128 under `<stem>_draft`. `--preview` writes no scene: it
 assembles the world as `snapshot` does (it reads `--prefabs`) and rasterises each
 camera at half its frame as `<stem>_preview.png`, byte-identical to `snapshot
@@ -7031,6 +7057,29 @@ camera at half its frame as `<stem>_preview.png`, byte-identical to `snapshot
 within `LENS_CLEARANCE` (0.25 block) of a placed block, with a `lens:` binding
 line — a report, since the grid counts every block as a full cube. Byte-deterministic (ADR-0006): the same record,
 plan and options give the same scene, candidate and preview bytes.
+
+### `delvec place-camera` — the record's one writer
+
+```
+delvec place-camera <campaign-dir> --name <row> [--answers <design.json row>]
+    (--report <camera-report.json> --slot <n> --fov <degrees>
+     | --candidates <record-format file> --pick <camera>
+     | --delete)
+```
+
+Writes one row of `design/cameras.json` (`camera::place` / `camera::delete`)
+and nothing else. `--report` writes the pose `delvec harvest` read off slot `n`
+— the eye as `pos`, the rotation as `yaw`/`pitch`, verbatim, since the stamp and
+the record speak Minecraft's rotation — with the field of view the person
+framed with, as `source: hand`; a new hand row takes `--answers`, a 1600×900
+frame, 300 samples and exposure 1.0, and a replaced one keeps its frame and
+exposure. `--candidates` writes the named camera of a record-format file
+(`candidates.json`) as `source: estimated`. **An estimate over a `hand` row is
+refused, naming the row**; only `--delete` frees the name. A row keeps its
+`answers`: a different `--answers` for an existing row is refused (a camera
+aimed at another picture is a new row). The written record is held to
+`design.json` like `delvec cameras` holds it. Refusals are `DW0721` (exit 2) and
+write nothing.
 
 ### `delvec edit apply` / `delvec edit preview` (spec-0017)
 
@@ -7087,9 +7136,10 @@ harvests it once; the DSL stays the artifact of record.
 
 **Landed (this reference describes only what `delvec` does today):** the shot
 proposal in data storage, the calibration verbs that mutate it, the `dw.done`
-harvest, `delvec harvest`'s `rehearsal-report.json`, and `delvec calibrate`.
-**Not yet landed:** playback — the macro-function dolly, `dw.beat` / `dw.shot`
-replay, `dw.free`, and the compiler-derived state-restore inverses.
+harvest, `delvec harvest`'s `rehearsal-report.json`, `delvec calibrate`, and the
+`dw.free` toggle (spec-0069, below). **Not yet landed:** playback — the
+macro-function dolly, `dw.beat` / `dw.shot` replay, and the compiler-derived
+state-restore inverses.
 
 ### The proposal (`dw:rehearsal` storage, creator overlay only)
 
@@ -7139,9 +7189,13 @@ campaign scoreboard — which is what lets adjust-and-replay cycle with no reloa
 | `/trigger dw.faster set <s>` / `dw.slower set <s>` | Scale `seconds` by ∓20 % with a floor of one whole second, clamped to 2..30. The one-second floor is why the step is `max(1, 20 %)`: plain integer scaling leaves a 2 s shot at its fixpoint forever. |
 | `/trigger dw.done` | The single harvest — one `[DelveShot]` line per shot. |
 
-The overlay also `say`-stamps a one-line `[DelveShotRoster]` the first time each
-player joins, mapping shot ids to their JSON pointers; without it the creator
-has no way to know what `dw.mark set 3` addresses.
+The overlay also `say`-stamps the `[DelveShotRoster]` the first time each
+player joins — `shots=<n>`, then one line `<id>=<pointer>#<index>` per shot, so no
+line reaches the 256-character chat bound whatever the campaign's shot count —
+mapping shot ids to their JSON pointers; without it the creator has no way to
+know what `dw.mark set 3` addresses. `delvec harvest` reads the roster back
+(`orchestrator::rehearsal::harvest_roster`) and says whether it is the roster
+`layout.json` states, warning when the log came from another build.
 
 **A `trigger` objective is armed by its score entry, so `scoreboard players
 reset` disarms it.** Vanilla stores "this player may `/trigger` this objective"
@@ -7165,7 +7219,7 @@ tests if any overlay function ever again arms and disarms the same objective.
 [DelveShot] shot=<n> beat=<n> ptr=<json-pointer> idx=<n> seconds=<n> look_at=<x,y,z|none> path=<x,y,z;…>
 ```
 
-`say`, not `tellraw` — the same channel and the same reason as `[DelveNote]`
+`say`, not `tellraw` — the same channel and the same reason as `[DelveNote]` (whose objectives continue on `[DelveNoteQuests]` lines after the stamp when one chat message cannot hold them; the harvester appends them to the stamp before)
 (spec-0006 §3): a system message to players never reaches the server stdout log
 the harvester reads. `shot`/`beat`/`ptr`/`idx` are compile-time constants, so a
 harvested proposal always knows which DSL node its patch belongs on; only the
@@ -7201,6 +7255,40 @@ The patch is **never applied here**: nothing writes to a stage document from the
 game. The agent applies it, reruns `delvec build`, and the normal proofs
 (`DW0308` air corridors, `DW0347` angular budget) gate the result exactly as
 they gate a hand-written shot.
+
+### A showcase camera placed by hand (spec-0069)
+
+Every overlay — a campaign with no cutscene included — registers two more
+trigger objectives, armed by `creator/tick` under the never-reset rule above
+(`rehearsal::the_tick_never_resets_a_trigger_it_arms` covers them):
+
+| Trigger | Effect |
+|------|---------|
+| `/trigger dw.free` | Leave the body, and on the next fire come back to it. Leaving summons a `marker` tagged `dw_free_home` at the player's position and rotation, carrying their free-flight id (`dw.fid`), their `playerGameType` (`dw.fmode`) and whether this overlay force-loaded its chunk (`dw.fload`, set only when `forceload query` says nothing else forces it), then sets spectator. Returning restores the game mode, teleports to the marker (position and rotation), removes the force-load it added and kills the marker. `gamemode` and `forceload` run at the server's function permission level (default 2), so no op is needed. |
+| `/trigger dw.cam set <n>` | Stamp slot `n` (`/trigger dw.cam` is slot 1). The eye is read off a `marker` summoned at `execute anchored eyes positioned ^ ^ ^` and killed in the same chain, in milli-blocks — the eye in any pose — and the rotation off the player's `Rotation` in centi-degrees, into `<ns>:camera` storage; `in` is `block` when the eye's cell is not `air`/`cave_air`/`void_air`. It refuses nothing. |
+
+```text
+[DelveCamera] slot=<n> eye=<x_mb>,<y_mb>,<z_mb> yaw=<centi-degrees> pitch=<centi-degrees> in=<air|block>
+```
+
+`delvec harvest` parses it into **`camera-report.json`** (`orchestrator::camera`,
+schema `0.1.0`), written only when the log carries a stamp: per slot `slot`,
+`eye` (blocks), `yaw`, `pitch` (degrees), `in`, the stamp's `at`, and `stamps`;
+the last stamp of a slot wins. `delvec place-camera --report` writes a slot into
+the record.
+
+Every suite proves both handlers on a server (`creator::packtests`, beside the
+suite's other templates; the PackTest compose service loads
+`creator-datapack/`): `creator_camera_standing` (the stamp's storage holds the
+eye within one milli-block of `Pos` + 1.62 and the rotation the dummy was
+teleported to), `creator_camera_in_a_block` (a spectator whose eye is in a stone
+block the template places: the same eye, `in` = `block`), and
+`creator_free_returns` (spectator after the first fire; adventure, the same
+position to the milli-block, the same yaw, and no place marker left after the
+second). They stand at the corner of the campaign's first area at y 300 — a
+column its setup force-loads — because PackTest places a batch millions of
+blocks out, where a position in milli-blocks overflows a score. A sneaking eye
+and the log line itself are proven live by `validation/rehearsal-flow.sh`.
 
 ---
 

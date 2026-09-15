@@ -1043,8 +1043,44 @@ pub fn render_plan(
             .expect("render plan root is a JSON object")
             .insert("horizon".to_string(), h);
     }
+    // **Every showcase camera photographs the scene** (spec-0069): the cameras of
+    // `design/cameras.json` are not plan shots — `delvec cameras` emits their
+    // scenes from the record — but they owe the same clear eye, asked of the same
+    // world, plus a frame that holds what the scene loads. Proven against the
+    // document just built, read back through the reader the scenes are cut from,
+    // so the box asked about is the box the chunk list is.
+    if let Some(record) = &plan.design_files.cameras {
+        use crate::compiler::view::camera::{ShowcaseRefusal, prove_showcase};
+        let bytes = serde_json::to_vec(&root).expect("render plan serializes");
+        let parsed = crate::compiler::view::scene::parse_plan(&bytes).map_err(|d| Failure {
+            code: DW_CAMERA_RECORD,
+            message: d.message,
+        })?;
+        let showcase =
+            prove_showcase(record, &parsed, |cell| !world.is_clear(cell)).map_err(|refusal| {
+                match refusal {
+                    ShowcaseRefusal::Record(d) => Failure {
+                        code: DW_CAMERA_RECORD,
+                        message: d.message,
+                    },
+                    ShowcaseRefusal::Camera(message) => Failure {
+                        code: crate::compiler::nav::DW_CAMERA_EYE_OCCLUDED,
+                        message,
+                    },
+                }
+            })?;
+        root["camera_eye_proof"]["showcase"] = json!(showcase);
+    }
     Ok((root, warnings))
 }
+
+/// `DW0721` raised by the build: `design/cameras.json` is refused by its one
+/// reader (`compiler::view::camera`) — the same rule `delvec cameras` refuses it
+/// under, stopping the build that reads it.
+const DW_CAMERA_RECORD: delvewright_dsl::DwCode = delvewright_dsl::DwCode::new(
+    crate::compiler::view::diag::DW_INPUT,
+    delvewright_dsl::ExitTier::Build,
+);
 
 /// **The hour this delve is played at**, as the render layer needs it.
 ///

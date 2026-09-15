@@ -6,16 +6,16 @@
       "fov": 50.0,
       "height": 900,
       "name": "hall-exterior",
-      "pitch": 20.0,
+      "pitch": 10.0,
       "pos": [
-        44.5,
-        82.0,
-        44.5
+        11.5,
+        67.0,
+        -2.5
       ],
       "source": "estimated",
       "spp": 300,
       "width": 1600,
-      "yaw": 135.0
+      "yaw": 0.0
     },
     {
       "answers": "concept/noon-hall",
@@ -23,16 +23,16 @@
       "fov": 70.0,
       "height": 900,
       "name": "hall-from-its-corner",
-      "pitch": 15.0,
+      "pitch": 5.0,
       "pos": [
-        2.5,
-        71.5,
-        2.5
+        10.5,
+        65.62,
+        3.5
       ],
       "source": "hand",
       "spp": 768,
       "width": 1600,
-      "yaw": 315.0
+      "yaw": 0.0
     }
   ],
   "campaign_id": "gallery"
