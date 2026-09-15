@@ -1614,7 +1614,12 @@
                   ]
                 },
                 {
-                  "anchor": "anchor/vantage"
+                  "anchor": "anchor/vantage",
+                  "offset": [
+                    0,
+                    2,
+                    0
+                  ]
                 }
               ],
               "seconds": 4,
@@ -1658,7 +1663,12 @@
                       ]
                     },
                     {
-                      "anchor": "anchor/vantage"
+                      "anchor": "anchor/vantage",
+                      "offset": [
+                        0,
+                        2,
+                        0
+                      ]
                     }
                   ],
                   "seconds": 3,

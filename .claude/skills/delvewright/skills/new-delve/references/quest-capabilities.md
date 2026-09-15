@@ -394,6 +394,11 @@ this section is what they are *for* and the traps in each.
   walked**: the router measures a horse, camel, donkey, mule, llama or strider as
   a person-sized body, so stage a mounted set piece on its mark and do not route
   it through doorways.
+- **A body is posted where it is declared, and never walked onto furniture.**
+  An NPC or actor anchored on a table stands on the table. A `move-npc` or
+  `move-actor` routes round anything the piece declares as furniture, and a
+  destination on it ends on the floor beside it. A walk whose only way is over
+  the table is refused naming it (`DW0510`): move the mark or open a way round.
 - **A status effect is a verb — and it ends by expiring, never by being
   cleared.** `give-effect {effect, seconds, amplifier?, hide_particles?, in?}`
   grants any pinned-1.21.11 status effect; `in {anchor, extent}` narrows it to

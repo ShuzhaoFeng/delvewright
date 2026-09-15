@@ -40,7 +40,7 @@
   tags, and the equipment assets. Every rule below is marked **cited** or
   **authored**.
 - **Numbers**: no spec or ADR beyond this one. **One new DW code**, `DW0898`
-  (§5). **`dsl_version` 0.28.0**: `equipment` gains two fields and
+  (§5). **`dsl_version` moves**: `equipment` gains two fields and
   `drops[].slot` two values.
 - **Non-goals**: a per-entity hitbox for the horse and the other mounts
   (`nav::entity_dims` has no row for them and falls back to the humanoid box;
@@ -469,7 +469,8 @@ is recorded as a debt.
    tests.*
 6. **The surface.** `delvec schema --stage all` exports `body` and `saddle`
    on `MobEquipment` and the two variants on `EquipSlot`, under the
-   `dsl_version` the implementing round is handed. *Tree: met — 0.28.0.*
+   `dsl_version` the implementing round is handed. *Tree: met — the export
+   at the implementing tree's `delvewright_dsl::DSL_VERSION`.*
 7. **Emission.** A test dresses a horse actor in armour and saddle and asserts
    the summon NBT carries `equipment:{body:{…},saddle:{…}}` and
    `drop_chances` with `body:0.0f,saddle:0.0f`; the generated gear PackTest
