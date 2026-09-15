@@ -378,7 +378,7 @@ criterion the verdict is recorded as a debt.
    and their y rises over the table; `tools/check-gallery-
    coverage.py` reports 0 units in neither state; two builds are byte-identical
    (ADR-0006). *Tree: debt — no table in the hall; the generator's anchors are
-   all points.* (loosening: criterion 9 no longer asserts a move in critical-path-waypoints.json, which holds only the player's route)
+   all points.* Loosening: this criterion asserts no byte in `validation/critical-path-waypoints.json`, which holds only the player's route.
 10. **Determinism.** Furniture regions enter `World` in placed-piece order and
     anchor-name order, never hash order; the double-build gate over the gallery
     is green. *Tree: debt.*
