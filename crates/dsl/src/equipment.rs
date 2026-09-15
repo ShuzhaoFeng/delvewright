@@ -260,12 +260,11 @@ pub fn judge(
         ..Misfit::default()
     };
     if let EquippableFact::Equippable(e) = fact {
-        if !slot.is_hand() {
-            if let Some(declared) = e.declared_slot() {
-                if declared != slot {
-                    m.declared_elsewhere = Some(declared);
-                }
-            }
+        if let Some(declared) = e.declared_slot()
+            && !slot.is_hand()
+            && declared != slot
+        {
+            m.declared_elsewhere = Some(declared);
         }
         if !e.allowed_entities.is_empty() && !admitted(entity, &e.allowed_entities) {
             m.excluded_by = Some(admitted_entities(&e.allowed_entities));
