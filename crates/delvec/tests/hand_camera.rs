@@ -432,14 +432,24 @@ fn a_hand_row_builds_byte_identically() {
             world.to_str().unwrap(),
         ]);
         assert!(r.status.success(), "{}", log(&r));
+        let index = scenes.join("shot-index.json");
+        let r = delvec(&[
+            "index",
+            dir.to_str().unwrap(),
+            "-o",
+            index.to_str().unwrap(),
+        ]);
+        assert!(r.status.success(), "{}", log(&r));
         outs.push((
             std::fs::read(dir.join("render-plan.json")).unwrap(),
             json(&dir.join("manifest.json")),
             std::fs::read(scenes.join("hello-world_camera_hero.json")).unwrap(),
+            std::fs::read(&index).unwrap(),
         ));
     }
     assert_eq!(outs[0].0, outs[1].0, "render-plan.json");
     assert_eq!(outs[0].2, outs[1].2, "the hand row's scene");
+    assert_eq!(outs[0].3, outs[1].3, "the shot index");
     let inputs = &outs[0].1["inputs"];
     assert!(
         inputs.to_string().contains("design/cameras.json"),
