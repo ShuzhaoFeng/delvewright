@@ -1117,7 +1117,10 @@ jobs:
           fi
       - name: every file a machine runs through its first line materialised with LF
         shell: bash
-        run: python tools/check-eol-attributes.py --working-tree
+        run: |
+          set -euo pipefail
+          python --version
+          python tools/check-eol-attributes.py --working-tree
 
   storybook-version:
     # A campaign's storybook is what a server host reads before running the
