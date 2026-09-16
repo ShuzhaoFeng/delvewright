@@ -1084,8 +1084,8 @@ jobs:
   # says every file some machine runs through its first line carries that
   # attribute. Both are readings of a declaration, and both are green on a Linux
   # runner whose checkout would have been LF anyway — the platform where the
-  # defect lives had never run here at all. This job makes the checkout the
-  # contributor's machine makes and reads what landed on disk.
+  # defect lives had never run here at all. This job makes the checkout a Windows
+  # machine makes and reads what landed on disk.
   #
   # `core.autocrlf` is set to `true` BEFORE the checkout and its resolved value
   # printed, for two reasons. It is git's Windows default, so the job reproduces
