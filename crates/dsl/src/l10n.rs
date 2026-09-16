@@ -19,6 +19,20 @@
 //! after `<prefix>/`, kebab preserved). Ids are unique within their namespace, so
 //! every key is unique.
 //!
+//! These are the keys **within one campaign** — what a sidecar answers, what
+//! `DW0180` counts, what `delvec l10n-inventory` hands a translator. What leaves
+//! the delve is each of them under that delve's own [pack namespace]
+//! (`delve.<campaign_id>.`, [`pack_key`]), because a client merges every applied
+//! resource pack into ONE language table and a campaign-relative key in there is
+//! a key some other delve answers. See [`pack_namespace`].
+//!
+//! A delve's pack writes into a second client-global space with the same property
+//! — the texture space its baked skins land in — so that namespace lives here too
+//! ([`pack_texture_id`], [`namespace_skin_textures`]), beside the one it argues
+//! from. What leaves a delve is namespaced in one place or in none.
+//!
+//! [pack namespace]: pack_namespace
+//!
 //! | Key | Source string |
 //! |-----|---------------|
 //! | `world.title` | stage-1 `content.title` |
@@ -89,57 +103,53 @@
 //! player never sees, so translating them is pointless and out of scope): world
 //! `theme`/`premise`, NPC `persona` fields, persona `relationships`.
 
+use crate::stages::Verb;
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::diagnostic::{Binds, Diagnostic, codes};
-use crate::envelope::{Campaign, Stage, is_supported_version, minor_ordinal};
+use crate::diagnostic::{Diagnostic, codes};
+use crate::envelope::{Campaign, DSL_VERSION};
 use crate::ids::CampaignId;
 use crate::stages::{NarrateStyle, QuestEffect};
 
 /// Walk the player-visible strings of a single quest effect (DSL v0.4): a
 /// `narrate` line and a named `give-item`'s display name. `keybase` is the
 /// effect's stable position-derived key prefix.
-fn effect_strings(
-    eff: &mut QuestEffect,
-    keybase: &str,
-    entry: KeyEntry,
-    f: &mut dyn FnMut(&str, &mut String, KeyEntry),
-) {
-    match eff {
-        QuestEffect::Narrate { text, .. } => f(&format!("{keybase}.narrate"), text, entry),
-        QuestEffect::GiveItem { name: Some(n), .. } => f(&format!("{keybase}.give"), n, entry),
+fn effect_strings(eff: &mut QuestEffect, keybase: &str, f: &mut dyn FnMut(&str, &mut String)) {
+    match &mut eff.verb {
+        Verb::Narrate { text, .. } => f(&format!("{keybase}.narrate"), text),
+        Verb::GiveItem { name: Some(n), .. } => f(&format!("{keybase}.give"), n),
         // spec-0016 §1: the bonfire's rest dialog is
         // read by the player like any other on-screen line, so its authored
         // strings translate like any other. Unauthored fields are absent from the
         // inventory — the compiler bakes its canonical English, exactly as
         // `world.boundary.message` does.
-        QuestEffect::Bonfire {
+        Verb::Bonfire {
             prompt,
             rest_label,
             save_label,
             ..
         } => {
             if let Some(p) = prompt.as_mut() {
-                f(&format!("{keybase}.rest_prompt"), p, entry);
+                f(&format!("{keybase}.rest_prompt"), p);
             }
             if let Some(r) = rest_label.as_mut() {
-                f(&format!("{keybase}.rest_label"), r, entry);
+                f(&format!("{keybase}.rest_label"), r);
             }
             if let Some(s) = save_label.as_mut() {
-                f(&format!("{keybase}.save_label"), s, entry);
+                f(&format!("{keybase}.save_label"), s);
             }
         }
         // DSL v0.8: what a sealed gate answers when the party right-clicks it. Read
         // off the actionbar exactly like a `narrate`, so it translates like one. An
         // unauthored hint is absent from the inventory — the compiler bakes its
         // canonical English, exactly as `world.boundary.message` does.
-        QuestEffect::CloseGate {
+        Verb::CloseGate {
             sealed_hint: Some(h),
             ..
-        } => f(&format!("{keybase}.sealed_hint"), h, entry),
+        } => f(&format!("{keybase}.sealed_hint"), h),
         _ => {}
     }
 }
@@ -152,16 +162,11 @@ fn effect_strings(
 /// segment ([`QuestEffect::nested_effect_lists_keyed_mut`]) and the effect's index
 /// within that list, e.g. `<keybase>.seq.<step>.<j>.narrate` for a narrate in
 /// sequence step `<step>`, effect `<j>`. Deterministic and stable across builds.
-fn effect_strings_deep(
-    eff: &mut QuestEffect,
-    keybase: &str,
-    entry: KeyEntry,
-    f: &mut dyn FnMut(&str, &mut String, KeyEntry),
-) {
-    effect_strings(eff, keybase, entry, f);
+fn effect_strings_deep(eff: &mut QuestEffect, keybase: &str, f: &mut dyn FnMut(&str, &mut String)) {
+    effect_strings(eff, keybase, f);
     for (seg, list) in eff.nested_effect_lists_keyed_mut() {
         for (j, inner) in list.iter_mut().enumerate() {
-            effect_strings_deep(inner, &format!("{keybase}.{seg}.{j}"), entry, f);
+            effect_strings_deep(inner, &format!("{keybase}.{seg}.{j}"), f);
         }
     }
 }
@@ -278,180 +283,10 @@ pub fn local_id(id: &str) -> &str {
     local(id)
 }
 
-/// **When an inventory key started being required**, and which stage document's
-/// `dsl_version` decides whether a given campaign has reached that point.
-///
-/// This is [`Binds`] one level down, and it exists because an obligation reaches
-/// an old campaign in two ways, only one of which is a per-diagnostic question. A
-/// NEW check is fenced by its code (`DwCode::since`). But [`each_string`] widening
-/// raises no new code at all: `DW0180` was always allowed to fire, and simply
-/// started demanding more keys when the walk widened onto an actor's own `name`,
-/// a v0.6 surface that older campaigns already emitted — which sends a shipped
-/// campaign red mid-staging with nothing in its own documents changed.
-///
-/// So the binding is versioned at the granularity the binding has: **per key**.
-/// A key whose entry version the campaign has not reached is still inventoried,
-/// still tagged and still translated if a sidecar happens to carry it — nothing
-/// about emission moves — but it is not something coverage may *demand*
-/// ([`required_inventory`]).
-///
-/// The rule for choosing, same as [`Binds`]: could adding this site turn a
-/// campaign red whose own documents did not change?
-///
-/// * **No** — the field is surface introduced at version N, so a campaign below
-///   N cannot carry it at all (`DW0141`) and the key never appears. Declare
-///   [`KeyEntry::always`]; the entry version is irrelevant because the key's
-///   existence is already gated by the surface.
-/// * **Yes** — the field existed in older campaigns and the walk is only NOW
-///   inventorying it. Declare [`KeyEntry::since`] with the version current when
-///   the widening lands, so existing campaigns adopt it in their own explicit
-///   version round rather than on the next engine build.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyEntry {
-    /// The stage document whose `dsl_version` governs this key.
-    pub stage: Stage,
-    /// When the key started being required of a campaign.
-    pub binds: Binds,
-}
-
-impl KeyEntry {
-    /// This key has been inventoried for as long as its surface has existed, so
-    /// its coverage obligation is exactly as old as the field itself.
-    pub const fn always(stage: Stage) -> KeyEntry {
-        KeyEntry {
-            stage,
-            binds: Binds::EveryVersion,
-        }
-    }
-
-    /// This key was **added to the walk** at the given minor version over surface
-    /// that already existed — so campaigns below it are grandfathered.
-    pub const fn since(stage: Stage, minor: u32) -> KeyEntry {
-        KeyEntry {
-            stage,
-            binds: Binds::Since(minor),
-        }
-    }
-
-    /// Is `c` obliged to translate a key with this entry?
-    fn required_by(self, versions: &StageVersions) -> bool {
-        match self.binds {
-            Binds::EveryVersion => true,
-            Binds::Since(n) => versions.of(self.stage) >= n,
-        }
-    }
-}
-
-/// The six (or seven) declared `dsl_version` ordinals of one campaign, snapshotted
-/// before the mutable walk borrows the campaign.
-#[derive(Clone, Copy, Debug)]
-struct StageVersions {
-    world: u32,
-    npcs: u32,
-    classes: u32,
-    quest_plan: u32,
-    quests: u32,
-    dialogue: u32,
-    world_edits: u32,
-    /// The spec-0049 map-pipeline documents. Neither carries a player-visible
-    /// string — a node's `intent` and a fact's `note` are authoring prose a
-    /// player never sees — so no inventory key is ever fenced at either of them.
-    /// They are carried anyway rather than defaulted, because `of` is a total
-    /// function over [`Stage`] and a stage with no answer would have to be a
-    /// `_` arm, which is how the next stage's strings get silently unfenced.
-    geometry_brief: u32,
-    layout_graph: u32,
-    site_plan: u32,
-    detail_plan: u32,
-}
-
-impl StageVersions {
-    fn of(self, stage: Stage) -> u32 {
-        match stage {
-            Stage::World => self.world,
-            Stage::Npcs => self.npcs,
-            Stage::Classes => self.classes,
-            Stage::QuestPlan => self.quest_plan,
-            Stage::Quests => self.quests,
-            Stage::Dialogue => self.dialogue,
-            Stage::WorldEdits => self.world_edits,
-            Stage::GeometryBrief => self.geometry_brief,
-            Stage::LayoutGraph => self.layout_graph,
-            Stage::SitePlan => self.site_plan,
-            Stage::DetailPlan => self.detail_plan,
-        }
-    }
-
-    fn of_campaign(c: &Campaign) -> StageVersions {
-        StageVersions {
-            world: minor_ordinal(&c.world.dsl_version),
-            npcs: minor_ordinal(&c.npcs.dsl_version),
-            classes: minor_ordinal(&c.classes.dsl_version),
-            quest_plan: minor_ordinal(&c.quest_plan.dsl_version),
-            quests: minor_ordinal(&c.quests.dsl_version),
-            dialogue: minor_ordinal(&c.dialogue.dsl_version),
-            world_edits: c
-                .world_edits
-                .as_ref()
-                .map(|w| minor_ordinal(&w.dsl_version))
-                .unwrap_or(0),
-            geometry_brief: c
-                .geometry_brief
-                .as_ref()
-                .map(|g| minor_ordinal(&g.dsl_version))
-                .unwrap_or(0),
-            layout_graph: c
-                .layout_graph
-                .as_ref()
-                .map(|g| minor_ordinal(&g.dsl_version))
-                .unwrap_or(0),
-            site_plan: c
-                .site_plan
-                .as_ref()
-                .map(|g| minor_ordinal(&g.dsl_version))
-                .unwrap_or(0),
-            detail_plan: c
-                .detail_plan
-                .as_ref()
-                .map(|g| minor_ordinal(&g.dsl_version))
-                .unwrap_or(0),
-        }
-    }
-}
-
-/// **The one key in the walk whose obligation is younger than its surface.**
-///
-/// `actors[].name` is DSL v0.6 surface, and [`each_string`] reaches it —
-/// correctly, a puppet's nameplate is as player-visible as an NPC's. Widened
-/// with no version gate, that makes every campaign at every declared version owe
-/// a translation for a string its own documents had not touched, on the next
-/// engine build.
-///
-/// 0.10.0 is the version current at the widening, so that is the version
-/// that owes it: campaigns at 0.10.0 and above translate actor nameplates,
-/// campaigns below are grandfathered and adopt it with their own version bump,
-/// which is what CLAUDE.md's version-adoption discipline asks for.
-const ACTOR_NAME_ENTRY: KeyEntry = KeyEntry::since(Stage::Quests, 10);
-
-/// The stage an effect root was authored in, as a [`Stage`].
-fn effect_stage(stage: &str) -> Stage {
-    match stage {
-        "dialogue" => Stage::Dialogue,
-        // Every other effect root — quest bundles, triggers, traps, `on_death` —
-        // is authored in the stage-5 quests document.
-        _ => Stage::Quests,
-    }
-}
-
 /// Walk every player-visible string in `c` in a fixed, deterministic order,
-/// invoking `f(key, &mut value, entry)` for each. The single traversal shared by
+/// invoking `f(key, &mut value)` for each. The single traversal shared by
 /// [`inventory`] and [`localize`] — they cannot drift.
-///
-/// The third argument is not decoration. Every site must state its [`KeyEntry`],
-/// which is what stops a widening from silently creating a coverage obligation
-/// on campaigns that predate it; there is no way to add a site without
-/// answering the question, because there is no `f` that takes two arguments.
-pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEntry)) {
+pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String)) {
     // Entity display names (a nameplate over a body) are keyed by their canonical
     // English TEXT, not by their declaration site: canonical English → owning key.
     // See the module header — one character routinely has one NPC identity and
@@ -460,14 +295,10 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
     // key and the puppets follow it.
     let mut entity_names: BTreeMap<String, String> = BTreeMap::new();
     // Stage 1 — world title + area names.
-    f(
-        "world.title",
-        &mut c.world.content.title,
-        KeyEntry::always(Stage::World),
-    );
+    f("world.title", &mut c.world.content.title);
     for area in &mut c.world.content.areas {
         let key = format!("area.{}.name", local(area.id.as_str()));
-        f(&key, &mut area.name, KeyEntry::always(Stage::World));
+        f(&key, &mut area.name);
     }
     // Stage 1 — boundary return message (v0.6, only when authored). The compiler's
     // default English is baked at emit time, so it is not inventoried; an authored
@@ -475,39 +306,23 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
     if let Some(b) = c.world.content.boundary.as_mut()
         && let Some(msg) = b.message.as_mut()
     {
-        f(
-            "world.boundary.message",
-            msg,
-            KeyEntry::always(Stage::World),
-        );
+        f("world.boundary.message", msg);
     }
     // Stage 1 — campaign outro (v0.6, only when authored): the closing line on the
     // completion advancement. Unauthored, the emitter falls back to the finale
     // quest's `goal`, which is inventoried in its own right — so the last sentence
     // of a delve is campaign-derived and translated either way.
     if let Some(outro) = c.world.content.outro.as_mut() {
-        f("world.outro", outro, KeyEntry::always(Stage::World));
+        f("world.outro", outro);
     }
     // Stage 3 — class names/blurbs + optional kit item display names.
     for class in &mut c.classes.content.classes {
         let cl = local(class.id.as_str()).to_string();
-        f(
-            &format!("class.{cl}.name"),
-            &mut class.name,
-            KeyEntry::always(Stage::Classes),
-        );
-        f(
-            &format!("class.{cl}.blurb"),
-            &mut class.blurb,
-            KeyEntry::always(Stage::Classes),
-        );
+        f(&format!("class.{cl}.name"), &mut class.name);
+        f(&format!("class.{cl}.blurb"), &mut class.blurb);
         for (i, item) in class.kit.iter_mut().enumerate() {
             if let Some(name) = item.name.as_mut() {
-                f(
-                    &format!("class.{cl}.kit.{i}.name"),
-                    name,
-                    KeyEntry::always(Stage::Classes),
-                );
+                f(&format!("class.{cl}.kit.{i}.name"), name);
             }
         }
     }
@@ -519,12 +334,12 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
             &npc.name,
             format!("npc.{}.name", local(npc.id.as_str())),
         );
-        f(&key, &mut npc.name, KeyEntry::always(Stage::Npcs));
+        f(&key, &mut npc.name);
     }
     // Stage 4 — quest goals.
     for q in &mut c.quest_plan.content.quests {
         let key = format!("quest.{}.goal", local(q.id.as_str()));
-        f(&key, &mut q.goal, KeyEntry::always(Stage::QuestPlan));
+        f(&key, &mut q.goal);
     }
     // Stage 5 — objective titles/hints (when set).
     for q in &mut c.quests.content.quests {
@@ -532,18 +347,10 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
         for o in &mut q.objectives {
             let ol = local(o.id().as_str()).to_string();
             if let Some(title) = o.title_mut().as_mut() {
-                f(
-                    &format!("obj.{ql}.{ol}.title"),
-                    title,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("obj.{ql}.{ol}.title"), title);
             }
             if let Some(hint) = o.hint_mut().as_mut() {
-                f(
-                    &format!("obj.{ql}.{ol}.hint"),
-                    hint,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("obj.{ql}.{ol}.hint"), hint);
             }
             // Stage 5 — v0.7 `interact.missing_item_hint`: narrated in chat to the
             // player who clicks without the required item in hand, so it is as
@@ -554,11 +361,7 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
                 ..
             } = o
             {
-                f(
-                    &format!("obj.{ql}.{ol}.missing_item_hint"),
-                    m,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("obj.{ql}.{ol}.missing_item_hint"), m);
             }
             // Stage 5 — v0.8 `collect.item_name`: the display name the
             // collected item carries as a `custom_name` component. A player reads
@@ -569,11 +372,7 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
                 item_name: Some(n), ..
             } = o
             {
-                f(
-                    &format!("obj.{ql}.{ol}.item_name"),
-                    n,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("obj.{ql}.{ol}.item_name"), n);
             }
         }
         // Stage 5 — v0.7 cast-ledger bark lines (spec-0020). Barks are spoken
@@ -588,11 +387,7 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
                     continue;
                 };
                 for (i, line) in pool.barks.iter_mut().enumerate() {
-                    f(
-                        &format!("cast.{ql}.{np}.{b}.bark.{i}"),
-                        line,
-                        KeyEntry::always(Stage::Quests),
-                    );
+                    f(&format!("cast.{ql}.{np}.{b}.bark.{i}"), line);
                 }
             }
         }
@@ -602,27 +397,15 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
         let np = local(tree.npc.as_str()).to_string();
         for node in &mut tree.nodes {
             let nd = local(node.id.as_str()).to_string();
-            f(
-                &format!("dlg.{np}.{nd}.text"),
-                &mut node.text,
-                KeyEntry::always(Stage::Dialogue),
-            );
+            f(&format!("dlg.{np}.{nd}.text"), &mut node.text);
             for (i, opt) in node.options.iter_mut().enumerate() {
-                f(
-                    &format!("dlg.{np}.{nd}.opt.{i}.label"),
-                    &mut opt.label,
-                    KeyEntry::always(Stage::Dialogue),
-                );
+                f(&format!("dlg.{np}.{nd}.opt.{i}.label"), &mut opt.label);
                 // v0.8: the button's hover tooltip. A player reads it exactly as
                 // they read the caption, so it translates exactly like one; an
                 // unauthored tooltip is absent from the inventory (no key, no
                 // coverage obligation), like every other `only if set` string.
                 if let Some(tip) = opt.tooltip.as_mut() {
-                    f(
-                        &format!("dlg.{np}.{nd}.opt.{i}.tooltip"),
-                        tip,
-                        KeyEntry::always(Stage::Dialogue),
-                    );
+                    f(&format!("dlg.{np}.{nd}.opt.{i}.tooltip"), tip);
                 }
             }
         }
@@ -632,11 +415,7 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
         let wl = local(w.id.as_str()).to_string();
         for (i, mob) in w.mobs.iter_mut().enumerate() {
             if let Some(name) = mob.name.as_mut() {
-                f(
-                    &format!("wave.{wl}.mob.{i}.name"),
-                    name,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("wave.{wl}.mob.{i}.name"), name);
             }
             // Stage 5 — v0.9 declared quest-item drops. The name
             // rides the dropped stack's `custom_name`, so the player reads it off
@@ -644,11 +423,7 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
             // mob's own name, and translated like one.
             for (n, dr) in mob.drops.iter_mut().enumerate() {
                 if let Some(name) = dr.name_mut() {
-                    f(
-                        &format!("wave.{wl}.mob.{i}.drop.{n}.name"),
-                        name,
-                        KeyEntry::always(Stage::Quests),
-                    );
+                    f(&format!("wave.{wl}.mob.{i}.drop.{n}.name"), name);
                 }
             }
         }
@@ -669,15 +444,11 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
         // 0.10's and not v0.6's.
         if let Some(name) = a.name.as_mut() {
             let key = entity_name_key(&mut entity_names, name, format!("actor.{al}.name"));
-            f(&key, name, ACTOR_NAME_ENTRY);
+            f(&key, name);
         }
         for (n, dr) in a.drops.iter_mut().enumerate() {
             if let Some(name) = dr.name_mut() {
-                f(
-                    &format!("actor.{al}.drop.{n}.name"),
-                    name,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("actor.{al}.drop.{n}.name"), name);
             }
         }
     }
@@ -687,41 +458,24 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
         let ll = local(l.id.as_str()).to_string();
         for (i, item) in l.items.iter_mut().enumerate() {
             if let Some(name) = item.name.as_mut() {
-                f(
-                    &format!("loot.{ll}.item.{i}.name"),
-                    name,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("loot.{ll}.item.{i}.name"), name);
             }
         }
     }
     // Stage 5 — lethal volumes (v0.10, spec-0031): the line the volume says as it
     // kills. As player-visible as a narrate, and read at the worst possible moment
     // to be reading a raw key, so it is inventoried like any other authored line.
-    // Widening this reaches NO older campaign: only a 0.10.0 quests stage may
-    // declare a lethal volume at all (`DW0141`), so the error-tier obligation this
-    // module's `inventory` doc warns about cannot be created retroactively here.
     for v in &mut c.quests.content.lethal_volumes {
         let vl = local(v.id.as_str()).to_string();
-        f(
-            &format!("lethal.{vl}.message"),
-            &mut v.message,
-            KeyEntry::always(Stage::Quests),
-        );
+        f(&format!("lethal.{vl}.message"), &mut v.message);
     }
     // Stage 5 — a runtime datum's player-visible name (v0.10, spec-0032). A named
     // datum is a currency: the engine states `<name>: <value>` on the holder's
     // action bar on every write, so the name is read as often as any narrate.
-    // Widening this reaches no older campaign — only a 0.10.0 quests stage may
-    // carry the field at all (`DW0141`).
     for st in &mut c.quests.content.state {
         let sl = local(st.id.as_str()).to_string();
         if let Some(name) = st.name.as_mut() {
-            f(
-                &format!("state.{sl}.name"),
-                name,
-                KeyEntry::always(Stage::Quests),
-            );
+            f(&format!("state.{sl}.name"), name);
         }
     }
     // Stage 5 — shops (v0.10, spec-0032): the dialog's title, and each button's
@@ -729,42 +483,26 @@ pub fn each_string(c: &mut Campaign, f: &mut dyn FnMut(&str, &mut String, KeyEnt
     // because they are the same two components of the same vanilla button codec.
     for sh in &mut c.quests.content.shops {
         let hl = local(sh.id.as_str()).to_string();
-        f(
-            &format!("shop.{hl}.title"),
-            &mut sh.title,
-            KeyEntry::always(Stage::Quests),
-        );
+        f(&format!("shop.{hl}.title"), &mut sh.title);
         for (i, off) in sh.offers.iter_mut().enumerate() {
-            f(
-                &format!("shop.{hl}.offer.{i}.label"),
-                &mut off.label,
-                KeyEntry::always(Stage::Quests),
-            );
+            f(&format!("shop.{hl}.offer.{i}.label"), &mut off.label);
             if let Some(t) = off.tooltip.as_mut() {
-                f(
-                    &format!("shop.{hl}.offer.{i}.tooltip"),
-                    t,
-                    KeyEntry::always(Stage::Quests),
-                );
+                f(&format!("shop.{hl}.offer.{i}.tooltip"), t);
             }
         }
     }
     // Stage 5 — recovery stakes (v0.10, spec-0032): the line a collection says.
     for st in &mut c.quests.content.stakes {
         let sl = local(st.id.as_str()).to_string();
-        f(
-            &format!("stake.{sl}.collected"),
-            &mut st.collected_message,
-            KeyEntry::always(Stage::Quests),
-        );
+        f(&format!("stake.{sl}.collected"), &mut st.collected_message);
     }
     // v0.4 effect strings — `narrate` text, a named `give-item`, a bonfire's rest
     // dialog, a seal's answer — over **every** root emission can lower an effect
     // from, not just the quests stage's three ([`effect_roots_mut`]).
     // Nesting inside each root is descended by `effect_strings_deep`, so a narrate
     // in a `sequence` step of a trap payload is inventoried like any other.
-    for (stage, _path, keybase, eff) in effect_roots_mut(c) {
-        effect_strings_deep(eff, &keybase, KeyEntry::always(effect_stage(stage)), f);
+    for (_stage, _path, keybase, eff) in effect_roots_mut(c) {
+        effect_strings_deep(eff, &keybase, f);
     }
 }
 
@@ -802,10 +540,9 @@ fn entity_name_key(claimed: &mut BTreeMap<String, String>, text: &str, own: Stri
 /// `DW0180 [error]`.
 ///
 /// **The asymmetry is the finding, and it is with this module's own siblings.**
-/// Two comparable obligations on existing content take a warn-first window and
-/// say so in their own text: `DW0188` (translation provenance, in
-/// [`validate_l10n_provenance`] right here) and `DW0465` (the cast ledger, in
-/// `compiler::cast`). Coverage does not. Whether it should is an owner call —
+/// One comparable obligation on existing content takes a warn-first window and
+/// says so in its own text: `DW0188` (translation provenance, in
+/// [`validate_l10n_provenance`] right here). Coverage does not. Whether it should is an owner call —
 /// changing a check's tier is never a mechanical change (CLAUDE.md) — so this
 /// records the measurement rather than acting on it.
 ///
@@ -816,32 +553,8 @@ fn entity_name_key(claimed: &mut BTreeMap<String, String>, text: &str, own: Stri
 pub fn inventory(c: &Campaign) -> BTreeMap<String, String> {
     let mut c2 = c.clone();
     let mut out = BTreeMap::new();
-    each_string(&mut c2, &mut |key, value, _entry| {
+    each_string(&mut c2, &mut |key, value| {
         out.insert(key.to_string(), value.clone());
-    });
-    out
-}
-
-/// The subset of [`inventory`] a campaign's sidecars are **obliged** to cover:
-/// every key whose [`KeyEntry`] this campaign's own declared `dsl_version`s have
-/// reached.
-///
-/// The two differ only by keys added to the walk over surface older campaigns
-/// already had — the widening shape. A key outside this set is still
-/// inventoried, still tagged into its text component and still translated when a
-/// sidecar carries one, so nothing about emission or about an already-adopted
-/// sidecar moves; it simply may not be *demanded* of a campaign that never opted
-/// into it. `DW0180` reads this; `DW0181` (orphans) reads the full [`inventory`],
-/// so a campaign that translated an un-demanded key early is never punished for
-/// being ahead.
-pub fn required_inventory(c: &Campaign) -> BTreeMap<String, String> {
-    let versions = StageVersions::of_campaign(c);
-    let mut c2 = c.clone();
-    let mut out = BTreeMap::new();
-    each_string(&mut c2, &mut |key, value, entry| {
-        if entry.required_by(&versions) {
-            out.insert(key.to_string(), value.clone());
-        }
     });
     out
 }
@@ -1183,7 +896,7 @@ pub fn play_sound_actor_refs(c: &Campaign) -> Vec<SoundRef> {
 /// as canonical English — but a fully-validated sidecar ([`validate_l10n`]) covers
 /// the inventory exactly, so a build only reaches here with complete coverage.
 pub fn localize(c: &mut Campaign, translations: &BTreeMap<String, String>) {
-    each_string(c, &mut |key, value, _entry| {
+    each_string(c, &mut |key, value| {
         if let Some(t) = translations.get(key) {
             *value = t.clone();
         }
@@ -1225,6 +938,129 @@ pub fn tag(key: &str, english: &str) -> String {
     format!("{TR_SIGIL}{key}{TR_SIGIL}{english}")
 }
 
+/// The root segment of the **pack key space** — the key space a delve writes into
+/// its resource pack and references from its text components. Distinct from every
+/// key space a delve authors in, and from the compiler's own
+/// [`chrome::RESERVED_PREFIX`](crate::chrome::RESERVED_PREFIX), so a key's first
+/// segment says which space it is in.
+pub const PACK_KEY_ROOT: &str = "delve";
+
+/// The prefix every key of one delve's pack key space carries:
+/// `delve.<campaign_id>.`.
+///
+/// # One delve, one vocabulary
+///
+/// A campaign's own key space (`world.title`, `npc.<n>.name`, …) is
+/// **campaign-relative**: it identifies a row inside one campaign's documents, and
+/// the l10n sidecar that answers it sits in that campaign's directory. Two
+/// campaigns naming the same row therefore write the same key, which is correct
+/// where those keys live and catastrophic where they end up.
+///
+/// Where they end up is a Minecraft client's **merged language table**, and that
+/// table is not per-delve. It is the union of every applied resource pack:
+/// `tools/playtest-server.sh` installs each delve's pack into the player's
+/// `resourcepacks/` directory as `<campaign_id>.zip`, where it stays enabled
+/// across servers and worlds, and a server-pushed pack merges on top of whatever
+/// is already applied. A `{"translate": …, "fallback": …}` component renders its
+/// `fallback` **only when the key is absent from that merged table**, so any delve
+/// whose pack is still applied answers for every other delve that asks the same
+/// key — one delve's completion toast reading another delve's title, in a language
+/// the delve it was playing does not ship.
+///
+/// So every key that leaves a delve — into a component, into a lang file — is
+/// namespaced by the campaign that owns it, and two delves' vocabularies are
+/// disjoint sets. The campaign id is the right grain: it is what the pack file is
+/// named after, so a rebuilt campaign replaces its own pack rather than joining it.
+///
+/// Campaign ids are kebab tokens ([`CampaignId::is_valid_syntax`]) and carry no
+/// `.`, so the namespace of one id can never be a prefix of another's key.
+pub fn pack_namespace(campaign_id: &str) -> String {
+    format!("{PACK_KEY_ROOT}.{campaign_id}.")
+}
+
+/// One key of `campaign_id`'s [pack key space](pack_namespace): the key as the
+/// campaign's own documents and sidecars know it, under that campaign's namespace.
+/// The single authority — the tagger, the chrome resolver and the lang-file writer
+/// all build their keys here, so what a component references and what the pack
+/// defines cannot drift.
+pub fn pack_key(campaign_id: &str, key: &str) -> String {
+    format!("{}{key}", pack_namespace(campaign_id))
+}
+
+/// The directory one delve's baked skin textures occupy inside the pack's shared
+/// asset namespace: `<campaign_id>/`.
+///
+/// # The same defect, in the other space a pack writes into
+///
+/// A lang key and a texture id are the same kind of thing: a name a delve writes
+/// into a space the CLIENT owns. Enabled resource packs merge per path and stay
+/// enabled across servers and worlds, so `assets/delvewright/textures/npc/keeper.png`
+/// is `keeper`'s face in every delve applying a pack — two delves that both cast a
+/// `keeper` render each other's faces, exactly as two delves that both name
+/// `world.title` read each other's titles. The grain is the campaign id for the
+/// same reason [`pack_namespace`] gives: the pack file is named after it, so a
+/// rebuilt campaign replaces its own textures rather than joining them.
+///
+/// # Why this is not [`pack_key`]'s dotted prefix
+///
+/// A texture id is not a key, it is a **resource-location path**, and a path's
+/// namespace separator is `/`. Vanilla's own assets nest by directory
+/// (`textures/entity/villager/…`); a `.` inside a final path segment is legal by
+/// the grammar but has no vanilla precedent, and this engine does not invent
+/// notation where established practice answers. Same grain, same reasoning, the
+/// separator the space uses.
+///
+/// Campaign ids are kebab tokens ([`CampaignId::is_valid_syntax`]) and so carry no
+/// `/`, so one delve's directory can never be a prefix of another's texture id.
+pub fn pack_texture_dir(campaign_id: &str) -> String {
+    format!("{campaign_id}/")
+}
+
+/// One texture id of `campaign_id`'s [texture space](pack_texture_dir): the id as
+/// the campaign's own documents know it (`skins/<texture_id>.png`, `DW0190`,
+/// `DW0309`), under that campaign's directory. The single authority — the
+/// mannequin's `profile.texture` and the pack's archive path are both built from
+/// it, so what a summon points at and what the pack ships cannot drift.
+pub fn pack_texture_id(campaign_id: &str, texture_id: &str) -> String {
+    format!("{}{texture_id}", pack_texture_dir(campaign_id))
+}
+
+/// Rewrite every skin declaration in `c` to carry its
+/// [pack texture id](pack_texture_id), returning `pack id → authored id` — the
+/// map a caller needs to find `skins/<authored id>.png` on disk.
+///
+/// **The funnel, and the reason this is a rewrite rather than a rule emitters
+/// follow.** A body's texture reaches emission exactly one way: an emitter reads
+/// `skin.texture_id` off the body it is summoning. Applying the namespace at those
+/// emit sites is a rule each of them has to remember — the shape that let an
+/// actor's skin be emitted but never baked. Applying it here, at the one walk over
+/// every body that declares a skin ([`crate::stages::body_skins_mut`], the mutable
+/// mirror of [`crate::stages::body_skin_sites`]), leaves no un-namespaced id in the
+/// campaign for a new emit site to find: a summon written tomorrow is namespaced
+/// because there is nothing else to read. Same shape as [`tag_translatables`],
+/// which is why it sits beside it.
+///
+/// **The creator's key space does not move.** `texture_id` is what a creator
+/// writes in `npcs.json`/`quests.json` and names `skins/<texture_id>.png` after,
+/// and `DW0190` (malformed or duplicate id) and `DW0309` (missing PNG) both read it
+/// as authored — every one of them runs on the campaign *before* this rewrite, and
+/// `validate`/`analyze`, which never emit, never reach it at all.
+///
+/// Two bodies may name one texture (a character and the puppet that plays it), so
+/// the returned map is keyed by pack id and is smaller than the walk.
+pub fn namespace_skin_textures(c: &mut Campaign) -> BTreeMap<String, String> {
+    let dir = pack_texture_dir(c.world.campaign_id.as_str());
+    let mut sources = BTreeMap::new();
+    for skin in crate::stages::body_skins_mut(c) {
+        let packed = format!("{dir}{}", skin.texture_id);
+        sources.insert(
+            packed.clone(),
+            std::mem::replace(&mut skin.texture_id, packed),
+        );
+    }
+    sources
+}
+
 /// Split a translation tag into `(key, english)`. `None` for an untagged string —
 /// a compiler-baked literal such as the default boundary message, which has no
 /// inventory key and is translated by neither v1 nor v2.
@@ -1261,11 +1097,19 @@ pub fn has_tr_sigil(s: &str) -> bool {
 /// The campaign handed to the compiler is tagged **once**, before the plan is
 /// built; from there the tag is the compiler's only evidence that a string it is
 /// about to emit is player-visible and translatable.
+///
+/// **The tag carries the [pack key](pack_key), not the inventory key.** The
+/// returned inventory is the campaign's own key space, unchanged — that is what a
+/// sidecar answers and what `DW0180` counts — while what travels to emission, and
+/// so into every component and lang file, is `delve.<campaign_id>.<key>`. The two
+/// differ exactly where they are read: a sidecar is read inside one campaign's
+/// directory, a lang file inside a client's shared language table.
 pub fn tag_translatables(c: &mut Campaign) -> BTreeMap<String, String> {
+    let ns = pack_namespace(c.world.campaign_id.as_str());
     let mut inv = BTreeMap::new();
-    each_string(c, &mut |key, value, _entry| {
+    each_string(c, &mut |key, value| {
         inv.insert(key.to_string(), value.clone());
-        *value = tag(key, value);
+        *value = tag(&format!("{ns}{key}"), value);
     });
     inv
 }
@@ -1436,18 +1280,11 @@ pub fn validate_l10n(c: &Campaign, sidecars: &BTreeMap<String, L10nDoc>) -> Vec<
     if declared.is_empty() {
         return d;
     }
-    // Coverage is asymmetric on purpose, and the asymmetry IS the obligation
-    // fence at key granularity (see [`KeyEntry`]):
-    //
-    // * `required` — what a sidecar must have. Every key whose entry version this
-    //   campaign has reached. A widening onto older surface adds to `inventory`
-    //   but not to `required`, so it cannot turn an unchanged campaign red.
-    // * `inv` — what a sidecar MAY have. The full inventory, so a campaign that
-    //   translated a not-yet-demanded key is not then told it is an orphan.
-    let required = required_inventory(c);
-    let required_keys: BTreeSet<&str> = required.keys().map(String::as_str).collect();
+    // A sidecar must carry every key of the inventory (`DW0180`) and no key
+    // outside it (`DW0181`).
     let inv = inventory(c);
-    let inv_keys: BTreeSet<&str> = inv.keys().map(String::as_str).collect();
+    let required_keys: BTreeSet<&str> = inv.keys().map(String::as_str).collect();
+    let inv_keys: BTreeSet<&str> = required_keys.clone();
     let campaign_id = c.world.campaign_id.as_str();
 
     for lang in declared {
@@ -1502,16 +1339,15 @@ pub fn validate_l10n(c: &Campaign, sidecars: &BTreeMap<String, L10nDoc>) -> Vec<
                 ),
             ));
         }
-        if !is_supported_version(&doc.dsl_version) {
+        if doc.dsl_version != DSL_VERSION {
             d.push(Diagnostic::error(
                 codes::L10N_MISSING,
                 "l10n",
                 format!("l10n/{lang}.json"),
                 format!(
-                    "sidecar has unsupported dsl_version `{}` — set it to a supported version \
-                     matching the stage docs (one of {:?})",
+                    "sidecar declares dsl_version `{}` — set it to `{DSL_VERSION}`, the one \
+                     number this engine accepts, matching the stage documents",
                     doc.dsl_version,
-                    crate::accepted_versions().collect::<Vec<_>>()
                 ),
             ));
         }

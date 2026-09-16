@@ -6,11 +6,16 @@ licensed with the code — and an exception that relies on nobody typing the wro
 id is not an exception, it is a hole. This is what keeps it honest.
 
 **The enumeration is the point.** An existence check that only looks where
-somebody pointed is how the UNRUN shape survives review, so every surface that
-could put a campaign in front of a player is named here: release-candidate
-discovery, the shipped-campaign build sweep, and the staging gate. When a fourth
-appears, it belongs in `SHIPPING_SURFACES` — and the last test in this file is
-what notices that the list stopped covering the tree.
+somebody pointed is how the UNRUN shape survives review, so every surface in THIS
+repository that could put a campaign in front of a player is named here: the
+image publisher, the three release workflows and the staging gate. When another appears, it belongs in
+`SHIPPING_SURFACES` — and the last test in this file is what notices that the
+list stopped covering the tree.
+
+A delve image is published by the CONTENT repository, on a
+`release/<campaign>/v<semver>` tag (spec-0024 §1), and nothing here can reach
+that workflow. What keeps the gallery out of it is that the gallery lives in this
+repository and the content repository's ladder builds only its own campaigns.
 """
 
 from __future__ import annotations
@@ -25,10 +30,10 @@ GALLERY_ID = "gallery"
 # asserted not to name the gallery: these are workflows and scripts in three
 # languages, and a parser per language is a parser per language to keep correct.
 SHIPPING_SURFACES = [
-    ".github/workflows/release.yml",
+    ".github/workflows/dsl-crate-publish.yml",
     ".github/workflows/engine-release.yml",
     ".github/workflows/infra-images.yml",
-    "tools/build-every-campaign.py",
+    ".github/workflows/plugin-release.yml",
     "tools/staging-gate.py",
 ]
 
@@ -38,7 +43,12 @@ SHIPPING_SURFACES = [
 # runner. Judging by "builds an image" instead would sweep the validation tier in
 # with the publish tier, and then the gallery's own CI job — which must name
 # `gallery/`, that being its entire purpose — would read as a release path.
-PUBLISH_MARKERS = ("docker/build-push-action", "push: true", "gh release upload")
+#
+# `gh release create` is a marker beside `gh release upload` because a release
+# created with files attaches them in the same command: the plugin's and the
+# format crate's Releases (ADR-0028) upload their assets that way, and a list of
+# markers that only knew the upload verb did not see the plugin workflow at all.
+PUBLISH_MARKERS = ("docker/build-push-action", "push: true", "gh release upload", "gh release create")
 
 
 def _read(rel: str) -> str:
@@ -61,24 +71,6 @@ def test_no_shipping_surface_names_the_gallery():
             )
         examined += 1
     assert examined == len(SHIPPING_SURFACES), "this gate examined fewer files than it lists"
-
-
-def test_shipped_campaign_discovery_cannot_reach_the_gallery():
-    """`build-every-campaign.py` enumerates the CONTENT repo, never this tree.
-
-    The discovery rule is `<content>/campaigns/*/world.json`, and the gallery
-    lives at `<repo>/gallery/`. Those cannot coincide: the content root is a
-    separate checkout, and even pointed at this repo the gallery is not under a
-    `campaigns/` directory.
-    """
-    text = _read("tools/build-every-campaign.py")
-    assert 'args.content / "campaigns"' in text, (
-        "campaign discovery no longer reads `<content>/campaigns` — re-derive "
-        "whether the gallery can now be reached by it"
-    )
-    assert not (REPO / "campaigns" / "campaigns" / GALLERY_ID).exists(), (
-        "a directory named `gallery` appeared in the content repo's campaign set"
-    )
 
 
 def test_the_gallery_is_where_the_spec_puts_it():

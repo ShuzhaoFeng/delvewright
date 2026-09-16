@@ -25,7 +25,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { SUPPORTED_DSL_VERSIONS, type Vec3Tuple } from "./critical-path.ts";
+import type { Vec3Tuple } from "./critical-path.ts";
 
 /** Where the death plan sits relative to `critical-path.json`. */
 const DEATH_PLAN_SUBPATH = ["validation", "death-plan.json"] as const;
@@ -35,7 +35,7 @@ const DEATH_PLAN_SUBPATH = ["validation", "death-plan.json"] as const;
  * one is REFUSED rather than half-read: a bot that silently ignores a field it
  * does not know reports a green over assertions it never made.
  */
-export const SUPPORTED_DEATH_PLAN_FORMAT = 1;
+export const SUPPORTED_DEATH_PLAN_FORMAT = 2;
 
 /** An inclusive world-space box. */
 export interface Box {
@@ -47,6 +47,21 @@ export interface Box {
 export interface LethalVolume {
   readonly id: string;
   readonly region: Box;
+  /**
+   * **The cells a player’s own body may not stand in.** The volume widened by
+   * the player’s half-width, computed by the compiler and carried here.
+   *
+   * It is not `region`, and the difference is the whole reason this field
+   * exists: a volume kills with a box selector, the server adjudicates a box
+   * selector on hitbox INTERSECTION, and a player standing in the cell beside a
+   * volume’s face reaches into it. So `region` is where the bot must WALK to
+   * die on purpose, and this is where it must not walk by accident — and a
+   * death anywhere in here is this volume’s kill, not a run fault.
+   *
+   * Read, never derived. Re-deriving it would put the engine’s
+   * cell-versus-hitbox rule in a second language where no Rust test reaches it.
+   */
+  readonly keepOut: Box;
   /** The canonical English the volume promises the player who dies in it. */
   readonly message: string;
   readonly messageKey: string | undefined;
@@ -281,8 +296,8 @@ export function parseDeathPlan(raw: unknown): DeathPlan {
     );
   }
   const version = raw["version"];
-  if (typeof version !== "string" || !SUPPORTED_DSL_VERSIONS.includes(version as never)) {
-    throw new DeathPlanParseError("/version", `unsupported dsl_version ${String(version)}`);
+  if (typeof version !== "string" || version.length === 0) {
+    throw new DeathPlanParseError("/version", "must name the dsl_version the campaign was built at");
   }
   const volumesRaw = raw["lethal_volumes"];
   if (!Array.isArray(volumesRaw)) {
@@ -294,6 +309,7 @@ export function parseDeathPlan(raw: unknown): DeathPlan {
     return {
       id: requireString(v["id"], `${p}/id`),
       region: requireBox(v["region"], `${p}/region`),
+      keepOut: requireBox(v["keep_out"], `${p}/keep_out`),
       message: requireString(v["message"], `${p}/message`),
       messageKey: optionalString(v["message_key"], `${p}/message_key`),
       damageType: requireString(v["damage_type"], `${p}/damage_type`),
@@ -432,6 +448,92 @@ export function inBox(cell: Vec3Tuple, box: Box): boolean {
   return [0, 1, 2].every((i) => box.lo[i]! <= cell[i]! && cell[i]! <= box.hi[i]!);
 }
 
+/**
+ * A player's collision box in blocks: `0.6` wide and deep, `1.8` tall, centred on
+ * the body's own `x`/`z` and standing on its `y`. Vanilla's `minecraft:player`
+ * dimensions — the numbers the server intersects a volume selector against.
+ */
+export const PLAYER_WIDTH = 0.6;
+export const PLAYER_HEIGHT = 1.8;
+
+/**
+ * **Would this volume's selector have matched a body standing at `pos`?**
+ *
+ * This is the server's own rule, and it is not {@link inBox}. A lethal volume is
+ * emitted as `@a[x=<lo.x>,dx=<hi.x - lo.x>,…]`; `dx` is a SPAN, so a one-cell
+ * region is `dx=0` and still selects the whole block — the region in continuous
+ * coordinates is `[lo, hi + 1]` on each axis. And vanilla tests **hitbox
+ * intersection**, not cell containment (`compiler::reach::reach_completion` says
+ * the same thing about the completion cube, from the other side of the same
+ * fact). A player is 0.6 wide, so a body whose feet cell is one outside the box
+ * is matched — and killed — whenever it stands within 0.3 of the face.
+ *
+ * The gallery's west pit measured it: the volume `[1, 63, 2]..[3, 67, 4]` killed
+ * the bot and its own promised line reached that player, while the position read
+ * back sat one cell past the `+z` face. Asked with `inBox` the stage answered
+ * that a real kill by that volume had happened outside it, refused to credit it,
+ * and reported the west pit as unexercised. A checker reads a document the way
+ * its CONSUMER reads it: the consumer here is a vanilla selector.
+ *
+ * Membership is the certain case in both directions — the same intersection the
+ * server computes — so this neither invents a kill nor disowns one.
+ */
+export function bodyInVolume(
+  pos: Vec3Tuple,
+  box: Box,
+  width = PLAYER_WIDTH,
+  height = PLAYER_HEIGHT,
+): boolean {
+  const half = width / 2;
+  const spans: readonly (readonly [number, number])[] = [
+    [pos[0] - half, pos[0] + half],
+    [pos[1], pos[1] + height],
+    [pos[2] - half, pos[2] + half],
+  ];
+  return spans.every(([min, max], i) => min <= box.hi[i]! + 1 && max >= box.lo[i]!);
+}
+
+/**
+ * **Could this volume's selector reach a body standing anywhere in `cell`?**
+ *
+ * The cell-shaped question, asked of the SERVER's rule — not a second reading of
+ * it. {@link bodyInVolume} answers about one exact body position; a pathfinder
+ * deals in cells, and a body standing in a cell may be anywhere in it, so the
+ * position this asks about is the one inside `cell` that comes nearest the
+ * volume on each axis. The volume is an interval on every axis and
+ * `bodyInVolume` is monotone in the position, so the nearest point is the whole
+ * of the question: if it is not matched, nothing in the cell is.
+ *
+ * This exists because the navigator and the server disagreed by exactly one cell
+ * of shell. The exclusion the pathfinder took kept the bot out of the cells
+ * INSIDE a lethal volume, while the volume's own selector kills a 0.6-wide body
+ * a third of a block past its face. On the gallery, `lethal/west-pit`
+ * `[1,63,2]..[3,67,4]` therefore killed the bot at `[3.85, 65.00, 5.14]` — cell
+ * `[3,65,5]`, one outside the box and inside the reach — on a walk that had
+ * nothing to do with the west pit, and the trial that was open at the time (the
+ * EAST pit's) had to report a death outside its own volume.
+ *
+ * Kept out is the safe direction to be generous in: a cell this reports is one
+ * some body in it can be killed from, and routing around it costs a detour.
+ * `compiler::stake::DeathRegion::holds_no_anchor` is the same rule on the other
+ * side, and it is what makes the anchor this bot walks back to a cell the walk
+ * is allowed to reach.
+ */
+export function volumeReachesCell(
+  cell: Vec3Tuple,
+  box: Box,
+  width = PLAYER_WIDTH,
+  height = PLAYER_HEIGHT,
+): boolean {
+  const nearest = (axis: number): number => {
+    const mid = (box.lo[axis]! + box.hi[axis]! + 1) / 2;
+    return Math.min(Math.max(mid, cell[axis]!), cell[axis]! + 1);
+  };
+  // `y` is the feet, and feet stand on the cell floor — there is no interval to
+  // clamp there, which is why only the horizontal axes are swept.
+  return bodyInVolume([nearest(0), cell[1]!, nearest(2)], box, width, height);
+}
+
 /** Every cell of an inclusive box, in a fixed order. */
 export function boxCells(box: Box): Vec3Tuple[] {
   const out: Vec3Tuple[] = [];
@@ -446,27 +548,116 @@ export function boxCells(box: Box): Vec3Tuple[] {
 }
 
 /**
- * The cell of `box` the bot should walk into to die in it: the one nearest `from`,
- * ties broken lexicographically so the choice is stable across runs.
+ * The cell of `box` the bot should walk into to die in it: the one nearest `from`
+ * **that a body can be in**, ties broken lexicographically so the choice is stable
+ * across runs. `undefined` when no cell of the box can hold a body at all.
  *
  * Navigation, not game logic — which cell of a declared box a client approaches is
  * exactly the kind of decision the harness is allowed to make.
+ *
+ * `canOccupy` is the caller's reading of the world; it defaults to "every cell",
+ * which is the pre-existing behaviour and is right for a plan examined with no
+ * server in front of it. A declared volume is a BOX, and a box drawn round a
+ * hazard routinely swallows part of the wall beside it: the gallery's east pit
+ * declares `[21,63,20]..[23,67,24]` and a 4x4x2 structure stands in the corner
+ * cell `[21,65,20]`, which is therefore the cell nearest every approach and the
+ * one cell of the seventy-five no player can ever stand in. Picked, the walk in
+ * drives at a solid block, gives up, and the trial reports that the bot stood in
+ * the volume and did not die — a sentence about a place a body cannot be.
  */
-export function entryCellOf(box: Box, from: Vec3Tuple): Vec3Tuple {
+export function entryCellOf(
+  box: Box,
+  from: Vec3Tuple,
+  canOccupy: (cell: Vec3Tuple) => boolean = () => true,
+): Vec3Tuple | undefined {
   const key = (c: Vec3Tuple): readonly number[] => [
     (c[0] - from[0]) ** 2 + (c[1] - from[1]) ** 2 + (c[2] - from[2]) ** 2,
     c[0],
     c[1],
     c[2],
   ];
-  return boxCells(box).sort((a, b) => {
-    const ka = key(a);
-    const kb = key(b);
-    for (let i = 0; i < ka.length; i++) {
-      if (ka[i]! !== kb[i]!) return ka[i]! - kb[i]!;
-    }
-    return 0;
-  })[0]!;
+  return boxCells(box)
+    .filter(canOccupy)
+    .sort((a, b) => {
+      const ka = key(a);
+      const kb = key(b);
+      for (let i = 0; i < ka.length; i++) {
+        if (ka[i]! !== kb[i]!) return ka[i]! - kb[i]!;
+      }
+      return 0;
+    })[0];
+}
+
+/** One body the client can see, as the marker rule reads it. */
+export interface MarkerCandidate {
+  readonly name: string;
+  readonly position: { readonly x: number; readonly y: number; readonly z: number };
+}
+
+/**
+ * The recovery stake's own hardware standing at `anchor`: the `interaction` box a
+ * player right-clicks, **paired with the glowing display that says there is
+ * something here**.
+ *
+ * Three properties, and each of them is a defect this replaced.
+ *
+ * *Nearest, not first.* A client cannot read the entity tag the compiler wrote, so
+ * a stake is acquired by proximity — and proximity means the NEAREST candidate,
+ * the rule every other interaction step in the harness already uses. Taking
+ * whichever body the entity map happened to yield first makes the measured
+ * distance a fact about map iteration order: any interaction inside the search
+ * radius could be reported as "the stake", 3.6 blocks from the anchor the
+ * placement table proved, while the stake itself stood on the anchor exactly.
+ *
+ * *Paired, not merely accompanied.* The display must stand WITH the interaction,
+ * not merely somewhere in the same search radius: the two are summoned at one
+ * position by one function, so anything else is a different object vouching for
+ * this one.
+ *
+ * *A rule, not a lookup.* It is here, pure, rather than inside the executor,
+ * because what counts as the stake is a reading of the campaign's promise and is
+ * exactly the kind of claim that has to be testable without a server.
+ */
+export function markersAt<T extends MarkerCandidate>(
+  bodies: readonly T[],
+  displays: readonly MarkerCandidate[],
+  anchor: Vec3Tuple,
+  searchRadius: number,
+  pairRadius: number,
+): T[] {
+  const at = (c: MarkerCandidate): number =>
+    Math.hypot(
+      c.position.x - (anchor[0] + 0.5),
+      c.position.y - anchor[1],
+      c.position.z - (anchor[2] + 0.5),
+    );
+  return bodies
+    .filter((c) => c.name === "interaction" && at(c) <= searchRadius)
+    .filter((c) =>
+      displays.some(
+        (d) =>
+          Math.hypot(
+            d.position.x - c.position.x,
+            d.position.y - c.position.y,
+            d.position.z - c.position.z,
+          ) <= pairRadius,
+      ),
+    )
+    .sort((a, b) => at(a) - at(b));
+}
+
+/**
+ * The nearest of {@link markersAt} — the one a player's crosshair would acquire
+ * if the pick were decidable at all.
+ */
+export function markerAt<T extends MarkerCandidate>(
+  bodies: readonly T[],
+  displays: readonly MarkerCandidate[],
+  anchor: Vec3Tuple,
+  searchRadius: number,
+  pairRadius: number,
+): T | undefined {
+  return markersAt(bodies, displays, anchor, searchRadius, pairRadius)[0];
 }
 
 /**
@@ -509,29 +700,84 @@ export function tableAnchor(
   return plan.rows.find((r) => r.seat === seat && r.region === region)?.anchor;
 }
 
+/**
+ * **One datum this death forfeits**, and the ledger read across the whole loop.
+ *
+ * There is one of these per stake the campaign's own `on_death` drops, not one
+ * per trial: a death that forfeits four datums promises four things, and asserting
+ * the first stake declared is asserting a quarter of the promise while reporting
+ * on all of it. Which quarter is not even decidable from the campaign — it is
+ * whichever the plan happens to list first.
+ */
+export interface TrialWager {
+  /** The stake id, as the campaign declares it. */
+  readonly stake: string;
+  /** The currency objective this datum's ledger is kept in. */
+  readonly objective: string;
+  /** The forfeit rule the campaign promised for it. */
+  readonly forfeit: ForfeitRule;
+  balanceBefore: number | undefined;
+  balanceAfterDeath: number | undefined;
+  expectedForfeit: number | undefined;
+  balanceAfterCollect: number | undefined;
+}
+
+/** A fresh wager record for one stake the death drops. */
+export function openWager(stake: StakeRule): TrialWager {
+  return {
+    stake: stake.id,
+    objective: stake.currency.objective,
+    forfeit: stake.forfeit,
+    balanceBefore: undefined,
+    balanceAfterDeath: undefined,
+    expectedForfeit: undefined,
+    balanceAfterCollect: undefined,
+  };
+}
+
 /** One walk into one lethal volume, and everything that was observed of it. */
 export interface LethalTrial {
   readonly volume: string;
   /** The cell the bot walked into. */
   readonly entryCell: Vec3Tuple;
-  /** The stake this trial expects the death to leave, if any. */
-  readonly stake: string | undefined;
-  /** The currency objective the ledger was read from. */
-  readonly objective: string | undefined;
+  /**
+   * Every datum this death forfeits — one per stake the campaign's `on_death`
+   * drops, in the plan's own order. Empty for a death that promises no wager.
+   */
+  readonly wagers: TrialWager[];
+  /**
+   * Whether the body was ever OBSERVED with its feet inside the declared volume.
+   *
+   * Nothing recorded this before, and the surviving verdict said "the bot stood
+   * inside the declared lethal volume and did NOT die" whether or not it had.
+   * "The volume did not kill what was in it" and "nothing was ever in it" are
+   * different findings with different owners, and only one of them is about the
+   * delve.
+   */
+  enteredVolume: boolean;
   died: boolean;
   deathPos: Vec3Tuple | undefined;
   /** Whether the volume's own promised line reached this player. */
   wordingSeen: boolean;
-  balanceBefore: number | undefined;
-  balanceAfterDeath: number | undefined;
-  expectedForfeit: number | undefined;
   respawnPos: Vec3Tuple | undefined;
   respawnSeat: string | undefined;
   expectedAnchor: Vec3Tuple | undefined;
   markerPos: Vec3Tuple | undefined;
+  /**
+   * **How many recovery-stake markers stood at the anchor**, not whether one did.
+   *
+   * A marker is a PLACE, so a death that forfeits four datums leaves ONE
+   * `minecraft:interaction` there and counts its four wagers in the ledger. Two
+   * boxes at one cell are `1.0 x 2.0` and coincident: every pick ray enters them
+   * at the same distance, the client resolves the tie by entity iteration order,
+   * and which one answers a right-click is not decidable from the campaign at all.
+   * A bot that took "the nearest interaction" could never see that — it acquires
+   * by proximity and a tie has no nearest — so the count is what has to be
+   * recorded.
+   */
+  markersFound: number;
   walkedBack: boolean;
   collectClicks: number;
-  balanceAfterCollect: number | undefined;
   markerRetired: boolean;
   /** A step that could not be attempted at all, with the reason. */
   abandoned: string | undefined;
@@ -541,29 +787,37 @@ export interface LethalTrial {
 export function openLethalTrial(
   volume: LethalVolume,
   entryCell: Vec3Tuple,
-  stake: StakeRule | undefined,
+  stakes: readonly StakeRule[],
 ): LethalTrial {
   return {
     volume: volume.id,
     entryCell,
-    stake: stake?.id,
-    objective: stake?.currency.objective,
+    wagers: stakes.map(openWager),
+    enteredVolume: false,
     died: false,
     deathPos: undefined,
     wordingSeen: false,
-    balanceBefore: undefined,
-    balanceAfterDeath: undefined,
-    expectedForfeit: undefined,
     respawnPos: undefined,
     respawnSeat: undefined,
     expectedAnchor: undefined,
     markerPos: undefined,
+    markersFound: 0,
     walkedBack: false,
     collectClicks: 0,
-    balanceAfterCollect: undefined,
     markerRetired: false,
     abandoned: undefined,
   };
+}
+
+/**
+ * Every stake this death drops, in the plan's own order.
+ *
+ * `on_death`'s own declaration decides — never "the first one declared" — so a
+ * campaign whose death drops three of its five stakes is asserted against exactly
+ * those three.
+ */
+export function stakesDropped(plan: DeathPlan): StakeRule[] {
+  return plan.stakes.filter((s) => plan.dropsStake.includes(s.id));
 }
 
 /** Distance from a float position to a block cell's centre-of-floor. */
@@ -588,9 +842,14 @@ export function lethalTrialFailures(t: LethalTrial, markerTolerance = 0.75): str
   }
   if (!t.died) {
     out.push(
-      `${t.volume}: the bot stood inside the declared lethal volume at ${where} and did NOT die. ` +
-        `A lethal volume is the one thing in the engine whose entire contract is that entering ` +
-        `it kills; nothing downstream of the death edge can be true if this is false`,
+      t.enteredVolume
+        ? `${t.volume}: the bot stood inside the declared lethal volume at ${where} and did NOT die. ` +
+          `A lethal volume is the one thing in the engine whose entire contract is that entering ` +
+          `it kills; nothing downstream of the death edge can be true if this is false`
+        : `${t.volume}: the bot was never OBSERVED inside the declared lethal volume — it was ` +
+          `driving at ${where} and its feet never got there, so this volume was not exercised ` +
+          `and nothing has been established about whether it kills. A stage that could not ` +
+          `enter is not a stage that passed, and the fault is the walk in, not the volume`,
     );
     return out;
   }
@@ -601,21 +860,24 @@ export function lethalTrialFailures(t: LethalTrial, markerTolerance = 0.75): str
         `required field precisely because there is no default that could be right`,
     );
   }
-  if (t.objective !== undefined) {
-    if (t.balanceBefore === undefined || t.balanceAfterDeath === undefined) {
+  // EVERY datum this death forfeits, not the first one declared. A death that
+  // takes four things promises four things.
+  for (const w of t.wagers) {
+    if (w.balanceBefore === undefined || w.balanceAfterDeath === undefined) {
       out.push(
-        `${t.volume}: the currency ledger \`${t.objective}\` could not be read across the death, ` +
-          `so the declared forfeit was never checked — an unread ledger is not a matched one`,
+        `${t.volume}: the currency ledger \`${w.objective}\` (stake \`${w.stake}\`) could not be ` +
+          `read across the death, so the declared forfeit was never checked — an unread ledger ` +
+          `is not a matched one`,
       );
-    } else {
-      const expected = t.balanceBefore - (t.expectedForfeit ?? 0);
-      if (t.balanceAfterDeath !== expected) {
-        out.push(
-          `${t.volume}: the death took the wrong amount. \`${t.objective}\` was ` +
-            `${t.balanceBefore} before and ${t.balanceAfterDeath} after; the campaign's declared ` +
-            `forfeit rule says it should be ${expected} (a forfeit of ${t.expectedForfeit ?? 0})`,
-        );
-      }
+      continue;
+    }
+    const expected = w.balanceBefore - (w.expectedForfeit ?? 0);
+    if (w.balanceAfterDeath !== expected) {
+      out.push(
+        `${t.volume}: the death took the wrong amount for \`${w.stake}\`. \`${w.objective}\` was ` +
+          `${w.balanceBefore} before and ${w.balanceAfterDeath} after; the campaign's declared ` +
+          `forfeit rule says it should be ${expected} (a forfeit of ${w.expectedForfeit ?? 0})`,
+      );
     }
   }
   if (t.respawnSeat === undefined) {
@@ -627,7 +889,7 @@ export function lethalTrialFailures(t: LethalTrial, markerTolerance = 0.75): str
         `re-seat exists to prevent`,
     );
   }
-  if (t.stake === undefined) return out;
+  if (t.wagers.length === 0) return out;
   if (t.expectedAnchor === undefined) {
     out.push(
       `${t.volume}: the placement table has NO row for this (death region, respawn seat) pair, ` +
@@ -643,6 +905,26 @@ export function lethalTrialFailures(t: LethalTrial, markerTolerance = 0.75): str
         `placement table chose for this death. The purse was taken and left nowhere`,
     );
     return out;
+  }
+  // **One place, one box.** A death leaves its wagers at ONE position — the
+  // placement table is keyed on (respawn seat, death region) and never on the
+  // stake, and a death on ordinary ground leaves the stake where the player fell
+  // — so the hardware there is one `minecraft:interaction` however many datums
+  // were forfeited. Two of them at one cell are coincident `1.0 x 2.0` boxes: any
+  // pick ray enters both at the same distance and the client resolves the tie by
+  // entity iteration order, so which one answers a right-click is not decidable
+  // from the campaign at all. A player then presses a purse and gets part of it,
+  // or none, depending on which box the client happened to pick.
+  if (t.markersFound > 1) {
+    out.push(
+      `${t.volume}: ${t.markersFound} recovery-stake markers stand at ${anchor}, and one death ` +
+        `leaves ONE place. Their \`minecraft:interaction\` boxes are 1.0 x 2.0 at the same cell ` +
+        `centre and therefore coincident: every pick ray enters them at the same distance, the ` +
+        `client resolves the tie by entity iteration order, and which of them answers a ` +
+        `right-click is not decidable from the campaign at all. The player presses their purse ` +
+        `and gets whichever wager the tie fell to. The ${t.wagers.length} datum(s) this death ` +
+        `forfeited belong in the per-player ledger at one marker, not in a marker each`,
+    );
   }
   // Under three quarters of a block, because a stake placed at the anchor the
   // table chose stands at its exact centre (`stk_put_<n>` positions at
@@ -667,24 +949,34 @@ export function lethalTrialFailures(t: LethalTrial, markerTolerance = 0.75): str
     );
     return out;
   }
-  if (t.balanceAfterCollect === undefined) {
-    out.push(`${t.volume}: the ledger could not be read after collecting the stake`);
-    return out;
-  }
-  if (t.balanceBefore !== undefined && t.balanceAfterCollect !== t.balanceBefore) {
-    out.push(
-      `${t.volume}: collecting the stake did not return exactly what the death took. ` +
-        `\`${t.objective}\` was ${t.balanceBefore} before the death and ${t.balanceAfterCollect} ` +
-        `after ${t.collectClicks} right-click(s) in one tick; it must be ${t.balanceBefore} — ` +
-        `more means the collection is not idempotent, less means the stake short-changed the ` +
-        `player`,
-    );
+  // EVERY datum comes back, from ONE press. The place is offered to every stake
+  // the death left a wager at, so a collection that restores one datum and leaves
+  // the others short is a collection that lost the rest of the purse.
+  for (const w of t.wagers) {
+    if (w.balanceAfterCollect === undefined) {
+      out.push(
+        `${t.volume}: the ledger \`${w.objective}\` (stake \`${w.stake}\`) could not be read ` +
+          `after collecting the stake`,
+      );
+      continue;
+    }
+    if (w.balanceBefore !== undefined && w.balanceAfterCollect !== w.balanceBefore) {
+      out.push(
+        `${t.volume}: collecting the stake did not return exactly what the death took from ` +
+          `\`${w.stake}\`. \`${w.objective}\` was ${w.balanceBefore} before the death and ` +
+          `${w.balanceAfterCollect} after ${t.collectClicks} right-click(s) in one tick; it must ` +
+          `be ${w.balanceBefore} — more means the collection is not idempotent, less means the ` +
+          `stake short-changed the player. One press at one place gives back every datum that ` +
+          `death forfeited there`,
+      );
+    }
   }
   if (!t.markerRetired) {
     out.push(
-      `${t.volume}: the stake was collected and its hardware is still standing at ${anchor}. ` +
-        `A collected stake that does not vanish is an affordance that answers a click with ` +
-        `nothing, forever`,
+      `${t.volume}: every wager at ${anchor} was collected and the hardware is still standing ` +
+        `there. A collected stake that does not vanish is an affordance that answers a click ` +
+        `with nothing, forever — and a place nobody holds a wager at is a place the engine ` +
+        `retires`,
     );
   }
   return out;
@@ -700,6 +992,16 @@ export interface DeathLoopBinding {
   readonly deathsObserved: number;
   /** Recovery stakes this run examined at a table anchor. */
   readonly stakesExamined: number;
+  /**
+   * **Datums this run read across a whole death loop** — the count of wagers whose
+   * ledger was read both after the death and after the collection.
+   *
+   * Distinct from {@link stakesExamined}, which counts PLACES. A death that
+   * forfeits four datums leaves one place, so a run reporting one examined stake
+   * and one examined datum has asserted a quarter of what that death promised
+   * while looking exactly as green as a run that asserted all of it.
+   */
+  readonly datumsExamined: number;
   /** Respawns matched to a declared seat. */
   readonly seatsMatched: number;
   /** Walk-back legs completed. */
@@ -716,6 +1018,10 @@ export function deathLoopBinding(
     volumesEntered: trials.length,
     deathsObserved: trials.filter((t) => t.died).length,
     stakesExamined: trials.filter((t) => t.markerPos !== undefined).length,
+    datumsExamined: trials
+      .flatMap((t) => t.wagers)
+      .filter((w) => w.balanceAfterDeath !== undefined && w.balanceAfterCollect !== undefined)
+      .length,
     seatsMatched: trials.filter((t) => t.respawnSeat !== undefined).length,
     walksBack: trials.filter((t) => t.walkedBack).length,
   };
@@ -745,4 +1051,16 @@ export function deathLoopBindingFailures(b: DeathLoopBinding): string[] {
     );
   }
   return out;
+}
+
+/**
+ * The datums a run PROMISED to examine — every stake every declared volume's
+ * death drops.
+ *
+ * Reported beside {@link DeathLoopBinding.datumsExamined} so a run that asserted
+ * one of four is legible as such from outside. A count that equals its own
+ * population is a measurement; one that does not is a finding.
+ */
+export function datumsPromised(plan: DeathPlan): number {
+  return plan.volumes.length * stakesDropped(plan).length;
 }

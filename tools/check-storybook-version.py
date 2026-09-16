@@ -20,7 +20,7 @@ One line, near the top of the README, in exactly this form:
   only falsify it: a version NEWER than the engine's own `DELVEC_VERSION` names
   a compiler that does not exist. `DELVEC_VERSION` is `env!("CARGO_PKG_VERSION")`
   at compile time, so this script reads the identical number straight from
-  `crates/compiler/Cargo.toml`'s `[package] version` — one source, never a
+  the root `Cargo.toml`'s `[workspace.package] version` — one source, never a
   second hand-typed copy.
 - **`on Minecraft Java <Z>`** is the game the delve runs on: `versions.toml`
   `[minecraft] version`, read through `lib/versions.py`. It carries equality,
@@ -114,6 +114,25 @@ entry is PRINTED on each run — an exemption nobody can see is an exemption
 nobody removes. An allowlisted campaign that would now PASS is an error: drop
 it. Keep this list empty whenever the repo lets you.
 
+**An entry is a fact about the CONTENT REPOSITORY, so it is only applied and
+only audited against it.** This script is not run only here: `/new-delve`'s
+step 14 runs it on a creator's machine, over the creator's own `campaigns/`,
+which never holds this repository's campaigns. Judging a repo-local exemption
+against that directory made the whole gate red on every creator machine **by
+construction** — `hollow-vigil: ALLOWLIST entry names a campaign that is not
+under campaigns`, exit 1, before a single storybook was read — so the creator
+learned nothing about their own storybook, not even that it had been looked at.
+The exemption was a fact about this repo being enforced against everyone else's.
+
+So the allowlist binds to ONE tree: `DEFAULT_CAMPAIGNS_ROOT`, the content
+sources this engine checkout names. When `--campaigns` resolves to that tree
+(CI, and any dev run over the content symlink) the allowlist exempts and the
+staleness audit runs, exactly as before. When it resolves anywhere else the
+allowlist is OUT OF SCOPE: nothing is exempted, nothing is audited, every entry
+is printed saying so and where it *is* judged. The discriminator is path
+identity after `resolve()`, not a flag anyone can pass: `--campaigns
+campaigns/campaigns` still audits.
+
 Deterministic, offline, no dependencies (Python 3 stdlib). Run from the repo
 root:
 
@@ -123,9 +142,9 @@ root:
 they resolve through the local `campaigns` symlink and through CI's
 `.github/actions/checkout-content`. The content repo's own campaign CI can run
 this same script against a pinned engine checkout, exactly as
-`.github/workflows/prefab-audit.yml` there already builds `delve-admit` from
-one; the only engine state read here is `crates/compiler/Cargo.toml`'s
-`[package] version` (== `DELVEC_VERSION`) and `versions.toml` `[minecraft]
+`.github/workflows/prefab-audit.yml` there already builds `delvec prefab` from
+one; the only engine state read here is the root `Cargo.toml`'s
+`[workspace.package] version` (== `DELVEC_VERSION`) and `versions.toml` `[minecraft]
 version`, both of them from the engine checkout the script is run out of.
 
 Exit 0 = every storybook marker present and true and no other version literal
@@ -145,7 +164,9 @@ from versions import minecraft_version  # noqa: E402
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEFAULT_CAMPAIGNS_ROOT = REPO_ROOT / "campaigns" / "campaigns"
-COMPILER_CARGO_TOML = REPO_ROOT / "crates" / "compiler" / "Cargo.toml"
+# The engine version: the root manifest's `[workspace.package] version`, which
+# every engine crate inherits.
+ROOT_CARGO_TOML = REPO_ROOT / "Cargo.toml"
 
 # The six staged DSL documents (ADR-0002). `world.json` is also the marker of a
 # campaign directory — a directory without one is not a campaign.
@@ -236,14 +257,14 @@ def version_key(version: str) -> tuple[int, ...]:
 
 
 def delvec_version() -> str:
-    """The compiler's release version, read from `crates/compiler/Cargo.toml`'s
+    """The compiler's release version, read from the root `Cargo.toml`'s
     `[package] version` — the same single source `DELVEC_VERSION` derives from
     (`env!("CARGO_PKG_VERSION")`), so this script never carries its own copy."""
-    text = COMPILER_CARGO_TOML.read_text(encoding="utf-8")
+    text = ROOT_CARGO_TOML.read_text(encoding="utf-8")
     match = CARGO_VERSION_RE.search(text)
     if match is None:
         raise SystemExit(
-            f"could not read `version` from {COMPILER_CARGO_TOML} — the "
+            f"could not read `version` from {ROOT_CARGO_TOML} — the "
             "[package] version field moved or changed shape; fix this check, "
             "do not drop the gate"
         )
@@ -448,6 +469,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root: pathlib.Path = args.campaigns
 
+    # The allowlist is a fact about THIS repository's content sources, so it
+    # binds to that one tree and to no other (module docstring). Resolved paths,
+    # never spellings: `--campaigns campaigns/campaigns` is the same tree.
+    def _resolved(p: pathlib.Path) -> pathlib.Path:
+        try:
+            return p.resolve()
+        except OSError:  # pragma: no cover - a path the OS refuses to resolve
+            return p
+
+    allowlist_applies = _resolved(root) == _resolved(DEFAULT_CAMPAIGNS_ROOT)
+    allowlist = ALLOWLIST if allowlist_applies else {}
+
     if not root.is_dir():
         print(
             f"campaign sources not found at {root} — check out the content repo "
@@ -478,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for campaign in campaigns:
         errors = check_campaign(campaign, engine_delvec, engine_mc)
-        if campaign.name in ALLOWLIST:
+        if campaign.name in allowlist:
             skipped.append(campaign.name)
             if not errors:
                 failures.append(
@@ -491,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
         scanned += sum(1 for r in expected_readmes(campaign) if r.is_file())
         failures.extend(f"{campaign.name}: {e}" for e in errors)
 
-    for stale in sorted(set(ALLOWLIST) - ids):
+    for stale in sorted(set(allowlist) - ids):
         failures.append(
             f"{stale}: ALLOWLIST entry names a campaign that is not under {root} — "
             "remove it (a stale exemption hides the next real one)"
@@ -509,19 +542,35 @@ def main(argv: list[str] | None = None) -> int:
     for name in skipped:
         print(f"TEMPORARILY ALLOWLISTED (no marker required yet): {name}")
         print(f"  reason: {ALLOWLIST[name]}")
+    if not allowlist_applies:
+        for name in sorted(ALLOWLIST):
+            print(
+                f"ALLOWLIST ENTRY OUT OF SCOPE HERE (neither applied nor audited): "
+                f"{name}"
+            )
+        print(
+            f"  {len(ALLOWLIST)} entry(s) name campaigns of {DEFAULT_CAMPAIGNS_ROOT}, "
+            f"and this run reads {root}. An exemption belongs to the repository it "
+            f"names; it is judged where that repository is."
+        )
+
+    # The binding count is printed on EVERY path, including the refusing one: a
+    # tool that fails owes the reader what it examined, or they cannot tell a
+    # broken storybook from a gate that never reached theirs (CLAUDE.md).
+    summary = (
+        f"{len(checked)} campaign(s) checked against delvec {engine_delvec} and "
+        f"Minecraft Java {engine_mc}, {len(skipped)} allowlisted; {scanned} "
+        f"storybook file(s) scanned for unbound version literals."
+    )
 
     if failures:
         print("storybook version-marker check FAILED:", file=sys.stderr)
         for failure in failures:
             print(f"  - {failure}", file=sys.stderr)
+        print(f"  examined: {summary}", file=sys.stderr)
         return 1
 
-    print(
-        f"storybook version markers OK: {len(checked)} campaign(s) checked against "
-        f"delvec {engine_delvec} and Minecraft Java {engine_mc}, {len(skipped)} "
-        f"allowlisted; {scanned} storybook file(s) scanned for unbound version "
-        "literals."
-    )
+    print(f"storybook version markers OK: {summary}")
     return 0
 
 

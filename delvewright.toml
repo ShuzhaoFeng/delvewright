@@ -24,7 +24,10 @@
 # [i18n]
 # provider = "openai-compatible"                # only supported value
 # base_url = "https://api.deepseek.com/v1"      # DeepSeek; Kimi: https://api.moonshot.cn/v1
-# model = "deepseek-chat"                       # Kimi: kimi-k2-0905-preview
+# model = "deepseek-flash"                      # Kimi: kimi-k2-0905-preview
+#                                               # ids ROTATE, and a retired one dies
+#                                               # HTTP 400 before a string is sent:
+#                                               # GET <base_url>/models to see them
 # api_key_env = "DELVEWRIGHT_I18N_API_KEY"
 # temperature = 0.2                             # optional (default 0.2)
 # batch_size = 40                               # optional keys per request (default 40)
@@ -34,7 +37,7 @@
 # [refimg] — draw a REFERENCE IMAGE for the design-alignment gate: concept art
 # produced BEFORE any prefab exists, so the owner confirms the design against a
 # picture instead of prose. NOT a render — a render is a candidate prefab imaged
-# by `delve-render`, later, at contact-sheet curation. Two stages, two producers.
+# by `delvec render`, later, at contact-sheet curation. Two stages, two producers.
 #
 #   consumed by: tools/refimg.py           ·   docs: docs/reference/tools.md
 #

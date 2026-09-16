@@ -31,13 +31,15 @@ import type {
 } from "./critical-path.ts";
 import { insideCompletion, reachGoal } from "./critical-path.ts";
 import type { StepExecutor } from "./sequencer.ts";
-import { BotDeathError, likelyDeathCause } from "./death.ts";
+import { BotDeathError, formatDeathPos, likelyDeathCause } from "./death.ts";
 import { hasSettled } from "./entity-settle.ts";
 import { NavigationOwner } from "./navigation.ts";
 import type { NamedEntityDeath } from "./teardown.ts";
 import type { StageName } from "./report.ts";
 import {
   AssistLedger,
+  CONTROLLED_GAMEMODE,
+  actorAttribution,
   actorExercise,
   actorFloorFinding,
   assistClearCommand,
@@ -45,6 +47,7 @@ import {
   assistPolicy,
   deathPhases,
   floorFinding,
+  unmeasuredFloorFinding,
   checkpointPrecondition,
   giveUpBudgetFor,
   observationOf,
@@ -54,6 +57,8 @@ import {
   respawnedAtCheckpoint,
   retryOutcome,
   scriptedDeathCommand,
+  scriptedDeathRefusal,
+  waveAttribution,
   type ActorEncounter,
   type ActorOutcome,
   type ActorTrial,
@@ -63,22 +68,28 @@ import {
   type DeathTrialRecord,
   type Encounter,
   type EncounterPhase,
+  type FightAttribution,
   type PerformedRest,
   type ReengageObservation,
+  type UnassistedOutcome,
+  type UnassistedResult,
   type UnkillableBody,
   type WaveCensus,
 } from "./combat.ts";
 import {
+  bodyInVolume,
   entryCellOf,
-  expectedForfeit,
   inBox,
+  markersAt,
+  expectedForfeit,
+  volumeReachesCell,
   openLethalTrial,
   seatAtRespawn,
+  stakesDropped,
   tableAnchor,
   type Box,
   type DeathPlan,
   type LethalTrial,
-  type StakeRule,
 } from "./death-loop.ts";
 import { presentAndTrigger } from "./held-item.ts";
 import {
@@ -90,7 +101,11 @@ import {
   type CensusMob,
   type CensusSummary,
 } from "./markers.ts";
-import { allowNonCollidingEntities, configureLeg } from "./movement.ts";
+import {
+  allowNonCollidingEntities,
+  configureLeg,
+  describeStuckNeighbours,
+} from "./movement.ts";
 import {
   nextLegWaypoints,
   retainStandableWaypoints,
@@ -107,6 +122,7 @@ import {
   gateRegionCells,
   gateRetryBudgetMs,
   gateWindowWaitMs,
+  gatesBindingWalk,
   gatesCrossedByHop,
   insideGate,
   nearCell,
@@ -143,9 +159,13 @@ import {
 import {
   WAVE_CLEAR_STREAK,
   WAVE_ENGAGE_NEAR,
+  beginCensusWatch,
   beginWave,
+  censusCleared,
   creditsWaveKill,
+  observeCensus,
   waveEngagementCleared,
+  type WaveCensusWatch,
   type WaveEngagement,
 } from "./wave.ts";
 
@@ -1021,6 +1041,19 @@ const REENGAGE_SETTLE_MS = 6_000;
  */
 const CENSUS_TIMEOUT_MS = 3_000;
 
+/**
+ * How often the kill step asks the server whether the wave still stands, while
+ * nothing else has prompted it to.
+ *
+ * The step's terminal condition is the census (`wave.ts`), so this is the
+ * background cadence that condition runs on: a census is a `/function` round trip
+ * plus a chat line per standing mob, which is cheap at this rate and would be
+ * noise at the loop's own 250ms. It is a FLOOR, not a schedule — a guess that the
+ * fight is over asks at once, and so does the bot's own tally reaching the wave's
+ * declared size, which is exactly when the old code asked.
+ */
+const WAVE_CENSUS_POLL_MS = 2_000;
+
 /** How many censuses' mob lines stay addressable. Only the newest is ever asked
  * for; the rest are kept so a late line cannot grow the map without bound. */
 const CENSUS_HISTORY = 4;
@@ -1087,10 +1120,57 @@ const LEDGER_SETTLE_MS = 5_000;
 const LEDGER_POLL_MS = 100;
 /** How long to wait for a scoreboard objective to start reporting after tracking it. */
 const SCORE_TRACK_TIMEOUT_MS = 5_000;
+
+/**
+ * The scoreboard display slots the harness may take, to READ a ledger.
+ *
+ * A vanilla server only tracks — and so only broadcasts — an objective occupying
+ * a display slot, and it tracks every occupied one, so the number of ledgers a
+ * run can read across one death is the number of slots it holds. Vanilla
+ * 1.21.11's `minecraft:scoreboard_slot` parser accepts `list`, `sidebar`,
+ * `below_name` and one `sidebar.team.<colour>` per chat colour; the team-coloured
+ * sidebars are the pool here because the plain `sidebar` is the slot the delve's
+ * own campaign readout uses and `list`/`below_name` change what a human watching
+ * the run sees.
+ *
+ * `sidebar` leads the list so a run that reads exactly one ledger takes exactly
+ * the slot it always did.
+ *
+ * Seventeen is a ceiling, not a promise: a campaign whose death forfeits more
+ * datums than this gets a refusal by name from `trackScore`, never a ledger read
+ * as unreported.
+ */
+const SCORE_DISPLAY_SLOTS: readonly string[] = [
+  "sidebar",
+  "sidebar.team.aqua",
+  "sidebar.team.black",
+  "sidebar.team.blue",
+  "sidebar.team.dark_aqua",
+  "sidebar.team.dark_blue",
+  "sidebar.team.dark_gray",
+  "sidebar.team.dark_green",
+  "sidebar.team.dark_purple",
+  "sidebar.team.dark_red",
+  "sidebar.team.gold",
+  "sidebar.team.gray",
+  "sidebar.team.green",
+  "sidebar.team.light_purple",
+  "sidebar.team.red",
+  "sidebar.team.white",
+  "sidebar.team.yellow",
+];
 /** How long to wait for the collected stake's hardware to be retired. */
 const MARKER_RETIRE_TIMEOUT_MS = 5_000;
 /** How far from the table's anchor the marker's own hardware is looked for. */
 const MARKER_SEARCH_RADIUS = 4;
+/**
+ * How close the glowing display must stand to the interaction for the two to be
+ * ONE stake. `stk_fill_<s>` summons both at the same position in one function, so
+ * this is a tolerance on floating point and on a client's rounding of it, never a
+ * search radius: at four blocks any display in the neighbourhood vouched for any
+ * interaction in it.
+ */
+const MARKER_PAIR_RADIUS = 0.5;
 /**
  * The pathfinder cost that makes a cell impassable. The library treats a step
  * whose total cost exceeds 100 as no move at all (`movements.js`: `if (cost > 100)
@@ -1269,14 +1349,20 @@ export class MineflayerExecutor implements StepExecutor {
    * written from here.
    */
   private readonly scores = new Map<string, Map<string, number>>();
-  /** The objective currently occupying the harness's display slot, if any. */
-  private trackedObjective: string | undefined;
+  /** Which display slot the harness put each tracked objective in. */
+  private readonly trackedSlots = new Map<string, string>();
   /**
    * The lethal volumes the build declares, as impassable boxes for the
    * PATHFINDER. The compiler already treats them as impassable in every route
    * proof; without the same fact here the bot walks its way back from a death
    * straight through the hazard it just died in, and a run intermittently dies
    * twice for reasons no content author could reproduce.
+   *
+   * These are each volume’s `keep_out` box and NOT its `region`: the volume
+   * kills on hitbox intersection, so the cell beside its face is a cell the bot
+   * dies standing in. Excluding only the region is what put the bot on
+   * `[12, 65, 21]` — one cell east of a pit — and killed it there twice, with
+   * every compile-time proof green.
    */
   private lethalBoxes: readonly Box[] = [];
   /** Suspended for exactly one walk: the deliberate step INTO a volume. */
@@ -1367,8 +1453,24 @@ export class MineflayerExecutor implements StepExecutor {
    * `assist_windows` array (spec-0023 takes no assist while deliberately dying,
    * nor on a billed encounter's honest first attempt). */
   private readonly encounterPhases = new Map<string, EncounterPhase>();
-  /** Inverted floor gate findings: billed fights the unassisted bot beat cold. */
+  /** Inverted floor gate findings: billed fights the unassisted bot beat cold,
+   * and billed fights it never reached — the gate's two sayable things. */
   private readonly floorFindings: string[] = [];
+  /**
+   * Who felled each wave's bodies, as its last census answered. The floor gate's
+   * verdict reads it, and so does the run report: an encounter cleared because a
+   * lethal volume ate two thirds of its cohort is not an encounter the bot beat,
+   * and before this nothing anywhere could tell the two apart.
+   */
+  private readonly waveAttributions = new Map<string, FightAttribution>();
+  /** What the one honest unassisted attempt observed, per wave. The floor gate's
+   * own measurement, which the run artifact carried nowhere before: three runs of
+   * one gallery tree ended `won`, `died`, `died` and wrote identical rows. */
+  private readonly unassisted = new Map<string, UnassistedOutcome>();
+  /** The live kill bookkeeping per wave, kept past the step that made it so a
+   * caller can say what its fight actually reached. `activeWave` is the one in
+   * flight; this is every one the run has opened. */
+  private readonly engagements = new Map<string, WaveEngagement>();
   /** Every body that outlived its kind's melee budget, with the arithmetic
    * that budgeted it. Recorded rather than absorbed: the six-second timer
    * this replaced blacklisted such a body and said nothing at all. */
@@ -2147,7 +2249,13 @@ export class MineflayerExecutor implements StepExecutor {
     let position: readonly [number, number, number] | undefined;
     const p = bot?.entity?.position;
     if (p) {
-      position = [Math.round(p.x), Math.round(p.y), Math.round(p.z)];
+      // EXACT, never rounded. `Math.round` here produced a triple that is neither
+      // a position nor the cell the body was in, and the death-loop stage read it
+      // as a cell: a kill at `z = 4.6` (cell 4, inside the volume) rounded to 5
+      // and was reported as a death outside the box that killed it. Whoever wants
+      // a cell floors; whoever wants "the volume's selector matched this body"
+      // asks `bodyInVolume`.
+      position = [p.x, p.y, p.z];
     }
     const cause = likelyDeathCause(this.recentChat, bot?.username ?? "");
     const err = new BotDeathError(position, cause);
@@ -2304,6 +2412,18 @@ export class MineflayerExecutor implements StepExecutor {
    */
   useDeathPlan(plan: DeathPlan): void {
     this.deathPlan = plan;
+    // The DECLARED regions, not the keep-out boxes, and the difference is a
+    // defect a clean auto-merge produced rather than a preference.
+    // `applyLethalExclusion` widens whatever it is handed, by the harness's own
+    // mirror of the server's rule (`volumeReachesCell`); the plan's `keep_out`
+    // is the compiler's answer to the same widening, already applied. Handing
+    // the second to the first widens twice and excludes a shell the compiler
+    // never refused — walkable ground the bot would then report as no path.
+    // One box, one widening. `keep_out` stays the contract's own answer and is
+    // held against `bodyInVolume` by `death-loop.test.ts`; which of the two
+    // rules the NAVIGATOR should read is one question, and it is answered here
+    // by the wider of the two — it excludes everything the keep-out box does,
+    // plus the course at `hi.y + 1`, so nothing this branch proved is lost.
     this.lethalBoxes = plan.volumes.map((v) => v.region);
   }
 
@@ -2362,19 +2482,37 @@ export class MineflayerExecutor implements StepExecutor {
    * it is named in the run report, and no delve content can reach it. The shipped
    * image is untouched — the bot is opped by a compose environment variable.
    *
+   * **One slot per objective, out of {@link SCORE_DISPLAY_SLOTS}.** Swapping ONE
+   * slot between objectives stops the server tracking the one it left, so that
+   * ledger's cached values freeze at whatever they last were — and a frozen ledger
+   * read as a live one is exactly the shape of a currency assertion that passes
+   * over a forfeit that never happened. A death that forfeits four datums has to
+   * read four ledgers ACROSS the same death, so the slots cannot be taken in turn:
+   * with one, three of the four read as never-reported (measured on the gallery,
+   * whose death drops four stakes). Vanilla's scoreboard has more than one
+   * display slot and this uses them.
+   *
    * Returns false when the objective never starts reporting: the bot is not opped,
-   * or the objective does not exist. Either is a finding, never a silent pass.
+   * the objective does not exist, or the pool is exhausted. Each is a finding,
+   * never a silent pass.
    */
   private async trackScore(objective: string): Promise<boolean> {
     const bot = this.requireBot();
-    if (this.trackedObjective === objective && this.scores.has(objective)) return true;
-    // Swapping the slot STOPS the server tracking the previous objective, so its
-    // cached values freeze at whatever they last were — and a frozen ledger read as
-    // a live one is the exact shape of a currency assertion that passes over a
-    // forfeit that never happened. Drop it rather than keep it.
-    if (this.trackedObjective !== undefined) this.scores.delete(this.trackedObjective);
-    bot.chat(`/scoreboard objectives setdisplay sidebar ${objective}`);
-    this.trackedObjective = objective;
+    if (this.trackedSlots.has(objective) && this.scores.has(objective)) return true;
+    const taken = new Set(this.trackedSlots.values());
+    const slot = SCORE_DISPLAY_SLOTS.find((s) => !taken.has(s));
+    if (slot === undefined) {
+      process.stderr.write(
+        `[death-loop] every one of the ${SCORE_DISPLAY_SLOTS.length} scoreboard display slot(s) ` +
+          `is already holding a ledger, so '${objective}' cannot be read at all. A campaign whose ` +
+          `death forfeits more datums than vanilla has display slots is a finding about the ` +
+          `campaign; reading them in turn is not the repair, because an objective that leaves a ` +
+          `slot stops being reported and its last value freezes\n`,
+      );
+      return false;
+    }
+    bot.chat(`/scoreboard objectives setdisplay ${slot} ${objective}`);
+    this.trackedSlots.set(objective, slot);
     const ok = await this.waitFor(
       () => this.scores.get(objective) !== undefined,
       SCORE_TRACK_TIMEOUT_MS,
@@ -2382,25 +2520,28 @@ export class MineflayerExecutor implements StepExecutor {
     );
     if (!ok) {
       process.stderr.write(
-        `[death-loop] the server never reported objective '${objective}' after it was put on ` +
-          `the sidebar. Either the bot is not opped (compose sets DELVE_OPS_OFFLINE to the bot's ` +
-          `name — check it matches DELVEWRIGHT_BOT_USERNAME) or the delve declares no such ` +
-          `ledger. The currency assertions cannot be made\n`,
+        `[death-loop] the server never reported objective '${objective}' after it was put in ` +
+          `display slot '${slot}'. Either the bot is not opped (compose sets DELVE_OPS_OFFLINE to ` +
+          `the bot's name — check it matches DELVEWRIGHT_BOT_USERNAME), the delve declares no ` +
+          `such ledger, or the server refused that slot name. The currency assertions cannot be ` +
+          `made\n`,
       );
     }
     return ok;
   }
 
-  /** Release the harness's display slot. Idempotent; best effort. */
+  /** Release every display slot the harness took. Idempotent; best effort. */
   private clearScoreDisplay(): void {
-    if (this.trackedObjective === undefined) return;
-    try {
-      this.requireBot().chat("/scoreboard objectives setdisplay sidebar");
-    } catch {
-      // teardown must never mask the run's own verdict
+    if (this.trackedSlots.size === 0) return;
+    for (const [objective, slot] of this.trackedSlots) {
+      try {
+        this.requireBot().chat(`/scoreboard objectives setdisplay ${slot}`);
+      } catch {
+        // teardown must never mask the run's own verdict
+      }
+      this.scores.delete(objective);
     }
-    this.scores.delete(this.trackedObjective);
-    this.trackedObjective = undefined;
+    this.trackedSlots.clear();
   }
 
   /** The bot's own value in a tracked ledger, or `undefined` if it has none. */
@@ -2421,14 +2562,25 @@ export class MineflayerExecutor implements StepExecutor {
     return this.myScore(objective);
   }
 
-  /** Make every declared lethal volume impassable to the pathfinder. */
+  /**
+   * Make every cell a declared lethal volume can KILL IN impassable to the
+   * pathfinder — which is not the same set as the cells inside the volume.
+   *
+   * The server adjudicates the volume against a body's whole hitbox, so it kills
+   * a player whose feet cell is one outside the box ({@link volumeReachesCell},
+   * the cell-shaped reading of {@link bodyInVolume}). Excluding only the box left
+   * the shell of cells the volume still reaches open to every walk, and the bot
+   * duly died on one: the gallery's east-pit trial opened with the bot parked at
+   * `[2, 65, 5]` and it was killed at `[3.85, 65.00, 5.14]` by the WEST pit,
+   * which the stage then had to report against the east pit's declared volume.
+   */
   private applyLethalExclusion(movements: InstanceType<typeof Movements>): void {
     if (this.lethalExclusionSuspended || this.lethalBoxes.length === 0) return;
     const boxes = this.lethalBoxes;
     movements.exclusionAreasStep.push((block): number => {
       const p = block.position;
       const cell: Vec3Tuple = [p.x, p.y, p.z];
-      return boxes.some((b) => inBox(cell, b)) ? LETHAL_STEP_COST : 0;
+      return boxes.some((b) => volumeReachesCell(cell, b)) ? LETHAL_STEP_COST : 0;
     });
   }
 
@@ -2463,13 +2615,39 @@ export class MineflayerExecutor implements StepExecutor {
   /** One volume: approach, step in, die, and assert the aftermath. */
   private async lethalTrial(plan: DeathPlan, volume: DeathPlan["volumes"][number]): Promise<void> {
     const bot = this.requireBot();
+    // A trial NEVER opens over an unrecovered death. `stepInto` rethrows the death
+    // latch on its first line, so a bot still lying dead from the previous trial's
+    // walk back never takes a step, never dies again, and the trial then reports
+    // that the bot stood in this volume and survived it — a verdict about a delve,
+    // produced by the harness leaving its own bot on the death screen. The
+    // previous trial's `deathPos` would also be read as this one's.
+    if (this.death !== undefined) {
+      process.stderr.write(
+        `[death-loop] ${volume.id}: the bot was still dead when this trial opened — ` +
+          `recovering before the approach, because a corpse cannot walk into anything\n`,
+      );
+      await this.recoverFromDeath();
+    }
     const here = this.feetCell() ?? [0, 0, 0];
-    const entryCell = entryCellOf(volume.region, here);
-    // Which stake this death is supposed to leave. `on_death`'s own declaration
-    // decides — never "the first one declared" — so a campaign whose death drops
-    // one of three stakes is asserted against the one it named.
-    const stake: StakeRule | undefined = plan.stakes.find((s) => plan.dropsStake.includes(s.id));
-    const trial = openLethalTrial(volume, entryCell, stake);
+    const entryCell = entryCellOf(volume.region, here, (c) => this.bodyCanOccupy(c));
+    // EVERY stake this death is supposed to leave. `on_death`'s own declaration
+    // decides which — never "the first one declared" — and all of them are
+    // asserted, because a death that forfeits four datums promises four things and
+    // leaves them at one place.
+    const stakes = stakesDropped(plan);
+    if (entryCell === undefined) {
+      // Every cell of the declared box is filled by a block. That is a finding
+      // about the campaign — nothing can ever die in this volume — and it is
+      // stated as one rather than by driving at a wall for ten seconds.
+      const trial = openLethalTrial(volume, volume.region.lo, stakes);
+      trial.abandoned =
+        `no cell of the declared volume [${volume.region.lo.join(", ")}]..` +
+        `[${volume.region.hi.join(", ")}] can hold a body: every one of them is filled by a ` +
+        `block, so nothing can ever be inside this volume for it to kill`;
+      this.lethalTrials.push(trial);
+      return;
+    }
+    const trial = openLethalTrial(volume, entryCell, stakes);
     this.lethalTrials.push(trial);
     // The near lip: the cell the placement table already proved is the reachable
     // point nearest this volume. Nothing new is computed — it is the anchor a
@@ -2480,16 +2658,22 @@ export class MineflayerExecutor implements StepExecutor {
       `[death-loop] ${volume.id}: standing at [${here.join(", ")}]; walking into ` +
         `[${entryCell.join(", ")}] to die there via the near lip ` +
         `${lip ? `[${lip.join(", ")}]` : "(none — the build declares no placement row)"}` +
-        `${stake ? `; expecting stake ${stake.id} on ledger ${stake.currency.objective}` : ""}\n`,
+        `${
+          trial.wagers.length > 0
+            ? `; expecting ${trial.wagers.length} wager(s): ${trial.wagers
+                .map((w) => `${w.stake} on ${w.objective}`)
+                .join(", ")}`
+            : ""
+        }\n`,
     );
 
-    // --- the ledger before -------------------------------------------------
-    if (stake) {
-      if (await this.trackScore(stake.currency.objective)) {
-        trial.balanceBefore = this.myScore(stake.currency.objective);
+    // --- the ledger before, for EVERY datum this death takes ----------------
+    for (const w of trial.wagers) {
+      if (await this.trackScore(w.objective)) {
+        w.balanceBefore = this.myScore(w.objective);
       }
-      if (trial.balanceBefore !== undefined) {
-        trial.expectedForfeit = expectedForfeit(stake.forfeit, trial.balanceBefore);
+      if (w.balanceBefore !== undefined) {
+        w.expectedForfeit = expectedForfeit(w.forfeit, w.balanceBefore);
       }
     }
 
@@ -2518,12 +2702,13 @@ export class MineflayerExecutor implements StepExecutor {
         }
       }
     }
+    if (this.bodyInside(volume.region)) trial.enteredVolume = true;
     // The one leg of the whole run that is ALLOWED into the hazard — skipped when
     // the approach already delivered the death.
     if (navFault === undefined && this.deathSeq === deathsBefore) {
       this.lethalExclusionSuspended = true;
       try {
-        await this.stepInto(volume.region, entryCell);
+        await this.stepInto(volume.region, entryCell, trial);
       } catch (err) {
         if (!(err instanceof BotDeathError)) {
           navFault =
@@ -2550,10 +2735,29 @@ export class MineflayerExecutor implements StepExecutor {
     trial.deathPos = this.death?.position ? [...this.death.position] : undefined;
     trial.wordingSeen = this.wordWatch?.seen === true;
     this.wordWatch = undefined;
-    // Credited only when the player died INSIDE the declared box. A death on the
-    // way there is a run fault, not this volume's kill, and crediting it would let
-    // any lethal accident anywhere pass as a proof that this box works.
-    const inside = trial.deathPos !== undefined && inBox(trial.deathPos, volume.region);
+    // Credited when the volume's own selector would have matched the body —
+    // `bodyInVolume`, the server's rule, asked of the exact position. That is
+    // the certain case in both directions, so it neither invents a kill nor
+    // disowns one, and it is a sharper answer than this branch's first one
+    // (`inBox(deathPos, keepOut)`), which asked whether SOME position in the
+    // body's cell could have met the volume.
+    const inside = trial.deathPos !== undefined && bodyInVolume(trial.deathPos, volume.region);
+    // …and whether the body was ever IN the volume is a different question,
+    // asked of the feet.
+    //
+    // **The two came apart the moment credit stopped meaning cell containment,
+    // and the inference `enteredVolume = inside` did not.** A body killed from
+    // one cell out from a face is matched by the selector and never had its feet
+    // in the hole — so reading `inside` here reports it as having stood in the
+    // volume, which is exactly the distinction
+    // {@link LethalTrial.enteredVolume} was added to make (*the volume did not
+    // kill what was in it* against *nothing was ever in it*). The walk sets it
+    // from `feetInside(volume.region)`, a cell test, and so does this: the block
+    // a body is in is the FLOOR of its position.
+    if (observed && trial.deathPos !== undefined) {
+      const feet = trial.deathPos.map(Math.floor) as unknown as Vec3Tuple;
+      if (inBox(feet, volume.region)) trial.enteredVolume = true;
+    }
     trial.died = observed && inside;
     if (navFault !== undefined) {
       trial.abandoned = navFault;
@@ -2561,24 +2765,25 @@ export class MineflayerExecutor implements StepExecutor {
     }
     if (observed && !inside) {
       trial.abandoned =
-        `the bot died at ` +
-        `${trial.deathPos ? `[${trial.deathPos.join(", ")}]` : "an unknown position"}, which is ` +
-        `OUTSIDE the declared volume [${volume.region.lo.join(", ")}]..` +
-        `[${volume.region.hi.join(", ")}] — that death is not this volume's kill and is not ` +
-        `credited as one`;
+        `the bot died at ${formatDeathPos(trial.deathPos)}, which is OUTSIDE the reach of ` +
+        `the declared volume [${volume.region.lo.join(", ")}]..[${volume.region.hi.join(", ")}] ` +
+        `— a body there is not one this volume's own selector can match, so that death is ` +
+        `not this volume's kill and is not credited as one`;
       return;
     }
     if (!trial.died) {
       // Nothing downstream is meaningful, and every field stays at its honest
       // default so the report cannot read as if it had checked them.
       process.stderr.write(
-        `[death-loop] ${volume.id}: the bot is standing in the volume and is still alive\n`,
+        trial.enteredVolume
+          ? `[death-loop] ${volume.id}: the bot is standing in the volume and is still alive\n`
+          : `[death-loop] ${volume.id}: the bot never got its feet inside the volume, so the ` +
+            `volume was not exercised — this says nothing about whether it kills\n`,
       );
       return;
     }
     process.stderr.write(
-      `[death-loop] ${volume.id}: died at ` +
-        `${trial.deathPos ? `[${trial.deathPos.join(", ")}]` : "an unknown position"}` +
+      `[death-loop] ${volume.id}: died at ${formatDeathPos(trial.deathPos)}` +
         `; the volume's own line ${trial.wordingSeen ? "reached" : "did NOT reach"} the player\n`,
     );
 
@@ -2598,22 +2803,23 @@ export class MineflayerExecutor implements StepExecutor {
         `(${trial.respawnSeat ?? "NO declared seat"})\n`,
     );
 
-    if (stake === undefined) return;
-    const objective = stake.currency.objective;
+    if (trial.wagers.length === 0) return;
 
-    // --- the forfeit -------------------------------------------------------
-    if (trial.balanceBefore !== undefined) {
-      trial.balanceAfterDeath = await this.settledScore(
-        objective,
-        trial.balanceBefore - (trial.expectedForfeit ?? 0),
-      );
+    // --- the forfeit, for every datum ---------------------------------------
+    for (const w of trial.wagers) {
+      if (w.balanceBefore !== undefined) {
+        w.balanceAfterDeath = await this.settledScore(
+          w.objective,
+          w.balanceBefore - (w.expectedForfeit ?? 0),
+        );
+      }
     }
 
     // --- the walk back, and the stake at the end of it ----------------------
     const anchor = trial.expectedAnchor;
     if (anchor === undefined) return;
     try {
-      await this.walkTo(anchor, 1, `death-loop walk back to the ${stake.id} at the near lip`);
+      await this.walkTo(anchor, 1, `death-loop walk back to the place at the near lip`);
       trial.walkedBack = true;
     } catch (err) {
       process.stderr.write(
@@ -2623,9 +2829,20 @@ export class MineflayerExecutor implements StepExecutor {
       return;
     }
     await this.awaitEntitySettle();
-    const marker = this.stakeHardwareAt(anchor);
+    // Every marker standing at the anchor, not the nearest: a death leaves ONE
+    // place, and two coincident boxes have no nearest — the pick is an exact tie.
+    const markers = this.stakeHardwareAt(anchor);
+    trial.markersFound = markers.length;
+    const marker = markers[0];
     trial.markerPos = marker ? [marker.position.x, marker.position.y, marker.position.z] : undefined;
     if (!marker) return;
+    if (markers.length > 1) {
+      process.stderr.write(
+        `[death-loop] ${volume.id}: ${markers.length} recovery-stake markers stand at ` +
+          `[${anchor.join(", ")}] — one death leaves ONE place, and coincident interaction ` +
+          `boxes are a ray-pick tie the client resolves by iteration order\n`,
+      );
+    }
 
     // --- the collection, twice in one tick ---------------------------------
     // AC6 is *idempotent under a double right-click in one tick*, so the two
@@ -2663,19 +2880,23 @@ export class MineflayerExecutor implements StepExecutor {
       trial.collectClicks = clicks.length;
       await Promise.allSettled(clicks);
     }
-    trial.balanceAfterCollect =
-      trial.balanceBefore === undefined
-        ? this.myScore(objective)
-        : await this.settledScore(objective, trial.balanceBefore);
+    // EVERY datum comes back from the one press: the place is offered to every
+    // stake the death left a wager at.
+    for (const w of trial.wagers) {
+      w.balanceAfterCollect =
+        w.balanceBefore === undefined
+          ? this.myScore(w.objective)
+          : await this.settledScore(w.objective, w.balanceBefore);
+    }
     trial.markerRetired = await this.waitFor(
-      () => this.stakeHardwareAt(anchor) === undefined,
+      () => this.stakeHardwareAt(anchor).length === 0,
       MARKER_RETIRE_TIMEOUT_MS,
       LEDGER_POLL_MS,
     );
     process.stderr.write(
-      `[death-loop] ${volume.id}: collected — ledger ${trial.balanceAfterDeath ?? "?"} → ` +
-        `${trial.balanceAfterCollect ?? "?"}; marker ` +
-        `${trial.markerRetired ? "retired" : "STILL STANDING"}\n`,
+      `[death-loop] ${volume.id}: collected — ${trial.wagers
+        .map((w) => `${w.stake} ${w.balanceAfterDeath ?? "?"} → ${w.balanceAfterCollect ?? "?"}`)
+        .join("; ")}; marker ${trial.markerRetired ? "retired" : "STILL STANDING"}\n`,
     );
   }
 
@@ -2688,12 +2909,18 @@ export class MineflayerExecutor implements StepExecutor {
    * (the timed-gate dash, the unstick burst) and it is what a player pressing W
    * does. Throws whatever the walk threw — including the {@link BotDeathError}
    * that is the whole point.
+   *
+   * It also RECORDS what it saw. The drive can run its deadline out with the body
+   * still outside the box — a wall in the way, a cell no body fits in — and it
+   * returns normally when it does, so the only thing separating "the volume did
+   * not kill what was in it" from "nothing ever got in" is this flag.
    */
-  private async stepInto(box: Box, cell: Vec3Tuple): Promise<void> {
+  private async stepInto(box: Box, cell: Vec3Tuple, trial: LethalTrial): Promise<void> {
     const bot = this.requireBot();
     const inside = (): boolean => {
-      const feet = this.feetCell();
-      return feet !== undefined && inBox(feet, box);
+      if (!this.bodyInside(box)) return false;
+      trial.enteredVolume = true;
+      return true;
     };
     if (inside()) return;
     const deadline = Date.now() + LETHAL_DEATH_TIMEOUT_MS;
@@ -2715,6 +2942,47 @@ export class MineflayerExecutor implements StepExecutor {
   }
 
   /**
+   * Whether the volume `box` would match this body right now — the SERVER's rule
+   * ({@link bodyInVolume}), asked of the bot's exact position.
+   *
+   * It asked whether the floored feet CELL was in the box, which is a different
+   * question and a narrower one: the emitted selector intersects a 0.6-wide
+   * hitbox against the region `[lo, hi + 1]`, so a body 0.2 blocks outside the
+   * face is one the volume kills and one this used to call outside. Saying
+   * "entered" of exactly the bodies the volume can act on is what makes
+   * `enteredVolume` mean anything, and it also ends {@link stepInto}'s drive at
+   * the moment the hazard can reach the bot rather than a third of a block late.
+   */
+  private bodyInside(box: Box): boolean {
+    const p = this.bot?.entity?.position;
+    return p !== undefined && bodyInVolume([p.x, p.y, p.z], box);
+  }
+
+  /**
+   * Whether a body could BE in `cell` — its own cell and the one above it clear.
+   *
+   * Deliberately weaker than {@link stanceStandable}: a lethal volume is often a
+   * hole, and falling into one is exactly how a player meets it, so demanding
+   * solid support underfoot would rule out the cells the volume is made of. What
+   * it does rule out is a cell filled by a block, which no walk can ever reach.
+   *
+   * Block-shape based (`boundingBox`), like {@link gateOpen}, so it stays right
+   * for whatever the campaign built with. A cell whose chunk is not loaded reads
+   * as occupiable: the conservative direction here is to keep a candidate the
+   * approach can then be measured against, never to silently narrow the box.
+   */
+  private bodyCanOccupy(cell: Vec3Tuple): boolean {
+    const bot = this.bot;
+    if (!bot?.entity) return true;
+    const p = bot.entity.position;
+    const at = (dy: number) => bot.blockAt(p.offset(cell[0] - p.x, cell[1] + dy - p.y, cell[2] - p.z));
+    const feet = at(0);
+    const head = at(1);
+    if (!feet || !head) return true;
+    return feet.boundingBox === "empty" && head.boundingBox === "empty";
+  }
+
+  /**
    * The recovery stake's own hardware standing at `anchor`: the `interaction` box
    * a player right-clicks, provided the glowing `item_display` that says there is
    * something here is standing with it.
@@ -2723,19 +2991,32 @@ export class MineflayerExecutor implements StepExecutor {
    * spec-0032 declares the stake to be an interaction for the hitbox AND a glowing
    * item display for the rendering, so an invisible hitbox is a stake no player
    * would ever find, not a stake that happens to render oddly.
+   *
+   * WHICH of them is the stake is {@link markersAt}'s rule, not this method's —
+   * the executor supplies the observation and the pure module decides, so the
+   * reading can be put to a test without a server in front of it.
+   *
+   * **Every one of them, not the nearest.** A death leaves ONE place, so a second
+   * marker standing at the anchor is a defect the run has to be able to state; and
+   * a client cannot state it by acquiring the nearest, because coincident boxes
+   * have no nearest — the pick is an exact tie the server resolves by iteration
+   * order. Counting is the only observation available from this side.
    */
-  private stakeHardwareAt(anchor: Vec3Tuple): Hitbox | undefined {
+  private stakeHardwareAt(anchor: Vec3Tuple): Hitbox[] {
     const bot = this.bot;
-    if (!bot) return undefined;
-    const near = (x: number, y: number, z: number): boolean =>
-      Math.hypot(x - (anchor[0] + 0.5), y - anchor[1], z - (anchor[2] + 0.5)) <=
-      MARKER_SEARCH_RADIUS;
-    const box = this.hitboxesNear(anchor, MARKER_SEARCH_RADIUS).find((h) => h.name === "interaction");
-    if (!box) return undefined;
-    const rendered = Object.values(bot.entities).some(
-      (e) => e?.position && e.name === "item_display" && near(e.position.x, e.position.y, e.position.z),
+    if (!bot) return [];
+    const displays = Object.values(bot.entities).flatMap((e) =>
+      e?.position && e.name === "item_display"
+        ? [{ name: "item_display", position: { x: e.position.x, y: e.position.y, z: e.position.z } }]
+        : [],
     );
-    return rendered ? box : undefined;
+    return markersAt(
+      this.hitboxesNear(anchor, MARKER_SEARCH_RADIUS),
+      displays,
+      anchor,
+      MARKER_SEARCH_RADIUS,
+      MARKER_PAIR_RADIUS,
+    );
   }
 
   /** Disconnect the bot, if connected. Safe to call more than once. */
@@ -2926,9 +3207,15 @@ export class MineflayerExecutor implements StepExecutor {
       // as walked; a non-matching walk (a sub-walk, or a post-transport step) does
       // not consume and falls back to the single destination goal.
       let legWaypoints: readonly Vec3Tuple[] | undefined;
-      // spec-0016 §4: the timed gates this leg's proven route walks
-      // THROUGH. Only a marked leg is allowed the window wait below.
-      let legGates: readonly TimedGate[] = [];
+      // spec-0016 §4: the timed gates that bind THIS walk. A gate is a world fact
+      // the compiler exports for the whole campaign; a proven leg's `timed_gates`
+      // narrows that table to the subset its route crosses. A walk with no proven
+      // leg — a death-loop approach or walk back, a die-retry return, a mob or actor
+      // chase — cannot narrow it and takes the declared table, so every walk crosses
+      // a gate by the same rule instead of the unproven ones reading a shut gate as
+      // broken geometry. See `gatesBindingWalk` for the crush withholding.
+      const declaredGates = this.waypoints?.timedGates ?? [];
+      let walkGates: readonly TimedGate[] = [];
       if (this.waypoints) {
         const match = nextLegWaypoints(this.waypoints.legs, this.legCursor, [
           pos[0],
@@ -2936,13 +3223,25 @@ export class MineflayerExecutor implements StepExecutor {
           pos[2],
         ]);
         legWaypoints = match.waypoints;
-        legGates = match.timedGates;
         this.legCursor = match.cursor;
-      }
-      if (legGates.length > 0) {
-        process.stderr.write(
-          `[timed-gate] ${label}: proven route crosses ${describeGates(legGates)}\n`,
-        );
+        const binding = gatesBindingWalk(match.matched, match.timedGates, declaredGates);
+        walkGates = binding.gates;
+        // Stated binding count, once per walk, for every campaign that declares a
+        // gate at all: how many of the declared gates bind this walk, which they
+        // are, what said so, and what was withheld. A zero here is a reader's
+        // finding, not something to be inferred from the absence of a line.
+        if (declaredGates.length > 0) {
+          process.stderr.write(
+            `[timed-gate] ${label}: ${binding.gates.length} of ${declaredGates.length} ` +
+              `declared gate(s) bind this walk, from ${binding.source}` +
+              (binding.gates.length > 0 ? ` — ${describeGates(binding.gates)}` : "") +
+              (binding.withheld.length > 0
+                ? `; withheld (crush — staging needs a compiler-pinned mouth this walk ` +
+                  `does not have): ${binding.withheld.map((g) => g.id).join(", ")}`
+                : "") +
+              `\n`,
+          );
+        }
       }
       // Drop proven waypoints the bot cannot physically stand on. The compiler models
       // every non-air block as a full 1×1×1 solid, so a leg may be proven by standing
@@ -2977,9 +3276,9 @@ export class MineflayerExecutor implements StepExecutor {
         // through the health it needs for the next fight.
         (spec, glabel) => this.gotoDefended(spec, glabel, sneak),
         (target) => this.unstickToward(target),
-        legGates.length > 0
+        walkGates.length > 0
           ? {
-              gates: legGates,
+              gates: walkGates,
               // Both raw phases race the death signal: a bot
               // that dies mid-wait or mid-dash respawns at world spawn, and an
               // un-raced loop reads that as "clear of the fill" and marches the
@@ -3387,8 +3686,18 @@ export class MineflayerExecutor implements StepExecutor {
     const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
     const near = Object.values(bot.entities)
       .filter((e) => e && e !== bot.entity && bot.entity.position.distanceTo(e.position) < 12)
-      .map((e) => `${e.name ?? "?"}@${e.position.distanceTo(bot.entity.position).toFixed(1)}`);
-    process.stderr.write(`[stuck] near ${fmt(bot.entity.position)}: ${near.join(", ") || "none"}\n`);
+      .map((e) => ({
+        name: e.name ?? "?",
+        distance: e.position.distanceTo(bot.entity.position),
+      }));
+    // Classified by the pathfinder's OWN passable set, not by a list kept here —
+    // a raw dump of the neighbourhood names bodies the search never even indexed,
+    // and reads as an accusation. See `describeStuckNeighbours`.
+    const passable = (bot.pathfinder.movements as { passableEntities?: Set<string> } | undefined)
+      ?.passableEntities;
+    process.stderr.write(
+      `[stuck] near ${fmt(bot.entity.position)}: ${describeStuckNeighbours(near, passable)}\n`,
+    );
     throw new Error(
       `failed ${label} at [${x}, ${y}, ${z}] (range ${range}); bot at ` +
         `${fmt(bot.entity.position)}: ${detail}`,
@@ -3424,10 +3733,12 @@ export class MineflayerExecutor implements StepExecutor {
    * delve says is not a fight:
    *   * the kinds this delve stages as NPCs are excluded from targeting outright,
    *     off `critical-path.json`'s `non_combatants` (see {@link isWaveMob});
-   *   * a confirmed KILL is a targeted mob that winks out in melee near the anchor;
-   *     reaching `step.count` clears the wave and returns immediately, so the bot
-   *     never treks off to a distant staged actor (which would trip later-area
-   *     triggers);
+   *   * a confirmed KILL is a targeted mob that winks out in melee near the anchor.
+   *     That tally is a DIAGNOSTIC and no longer a terminal condition: what ends the
+   *     step is the wave census, the server's own answer over the wave's tag (see
+   *     `wave.ts`). A tally reaching `step.count` still asks the census at once, so
+   *     the bot leaves the moment the fight is provably over and never treks off to
+   *     a distant staged actor (which would trip later-area triggers);
    *   * a candidate that outlives the melee budget the ENCOUNTER's own arithmetic
    *     gives its kind (`bodies[].give_up_swings`), or that cannot be pathed to, is
    *     dropped so the loop hunts the next real wave mob instead of fixating —
@@ -3446,6 +3757,17 @@ export class MineflayerExecutor implements StepExecutor {
     // that ambushes the bot on the way in, and that kill is wave progress like any other
     // — crediting it only from the kill loop deadlocked the objective (ladder run 13).
     const engagement = beginWave(step.wave, step.pos);
+    // What the SERVER has said about this wave during this step. The terminal
+    // condition, and the source of the fight's attribution. See `wave.ts`: a body
+    // that dies in a way the proximity rule cannot attribute, or a scripted death
+    // that re-seats the wave under a private counter, both leave `killed` unable
+    // ever to reach `step.count` — measured on the gallery, where two of three
+    // bodies withered and fell and `1/3` was as far as the tally could get.
+    const watch = beginCensusWatch();
+    // Kept past the step, so what the fight REACHED survives the exception the
+    // step throws. A caller that has to reconstruct "did the bot swing at
+    // anything" from a message string is reading prose for a measurement.
+    this.engagements.set(step.wave, engagement);
     const onGone = (e: Entity): void => {
       if (!creditsWaveKill(engagement, e.id, e.position)) return;
       engagement.credited.add(e.id);
@@ -3495,14 +3817,33 @@ export class MineflayerExecutor implements StepExecutor {
       const swings = new Map<number, number>();
       // The wave's own census: every "the fight is over" test below is
       // a guess made from SHAPES, and the server can simply be asked. See
-      // `waveStillStands`.
+      // {@link pollWaveCensus}.
       const enc = this.encounterFor(step.wave);
+      let lastCensusAt = 0;
+      const askCensus = async (): Promise<number | undefined> => {
+        lastCensusAt = Date.now();
+        return this.pollWaveCensus(step, enc, watch);
+      };
       while (Date.now() < deadline) {
         // Fail fast if a mob killed the bot mid-fight (gap 7) rather than looping.
         if (this.death) throw this.death;
-        // The whole wave is confirmed down — done, wherever the bot happens to
-        // stand — unless the server says otherwise.
-        if (engagement.killed >= step.count && !(await this.waveStillStands(step, enc))) return;
+        // THE terminal condition: the server says nothing of this wave stands.
+        // Asked on its own cadence, and at once when the bot's own tally has
+        // reached the wave's declared size — which is the only thing that tally
+        // decides now.
+        const floorMs = engagement.killed >= step.count ? 0 : WAVE_CENSUS_POLL_MS;
+        if (Date.now() - lastCensusAt >= floorMs) {
+          await askCensus();
+          if (censusCleared(watch)) {
+            process.stderr.write(
+              `[kill ${step.wave}] the wave census reports nothing of ${step.wave} standing, ` +
+                `on ${watch.clearStreak} consecutive answers (${watch.peakStanding} standing ` +
+                `at its fullest this step; the bot confirmed ${engagement.killed} of ` +
+                `${step.count} itself) — wave cleared\n`,
+            );
+            return;
+          }
+        }
         // Eat between exchanges when hurt and nothing is in reach (no-op otherwise).
         await this.maybeEat(`wave ${step.wave}`);
         const cast = this.requireNonCombatants();
@@ -3542,7 +3883,7 @@ export class MineflayerExecutor implements StepExecutor {
           })
         ) {
           if (++clearedStreak >= WAVE_CLEAR_STREAK) {
-            if (!(await this.waveStillStands(step, enc))) {
+            if (!((await askCensus()) ?? 0)) {
               process.stderr.write(
                 `[kill ${step.wave}] every mob this fight engaged is down ` +
                   `(${engagement.killed} confirmed near the anchor) and no hostile is within ` +
@@ -3567,7 +3908,7 @@ export class MineflayerExecutor implements StepExecutor {
           // reach or unkillable — so the step still ends, but it ends having SAID so,
           // instead of reporting a clearance the objective will contradict.
           if (++emptyStreak >= WAVE_CLEAR_STREAK) {
-            if (await this.waveStillStands(step, enc)) {
+            if (((await askCensus()) ?? 0) > 0) {
               process.stderr.write(
                 `[kill ${step.wave}] nothing eligible is left to attack, but the wave census ` +
                   `still counts mobs alive — leaving the fight unfinished rather than claiming ` +
@@ -3654,9 +3995,11 @@ export class MineflayerExecutor implements StepExecutor {
       this.activeWave = undefined;
     }
     throw new Error(
-      `kill timed out after ${KILL_TIMEOUT_MS}ms: wave ${step.wave} ` +
-        `(${engagement.killed}/${step.count} confirmed dead; ` +
-        `${engagement.engaged.size} mob(s) engaged) not cleared` +
+      `kill timed out after ${KILL_TIMEOUT_MS}ms: wave ${step.wave} not cleared — the census ` +
+        `last reported ${watch.standing ?? "no"} of the wave standing over ${watch.answers} ` +
+        `answer(s)${watch.seen ? "" : ", and never once saw the wave exist"} ` +
+        `(the bot confirmed ${engagement.killed}/${step.count} itself; ` +
+        `${engagement.engaged.size} mob(s) engaged)` +
         unboundedEncounterNote(unbounded),
     );
   }
@@ -3740,9 +4083,30 @@ export class MineflayerExecutor implements StepExecutor {
     return this.encounterPhases.get(wave) ?? "not-reached";
   }
 
+  /** What the inverted floor gate's one unassisted attempt at `wave` observed.
+   * `undefined` when the policy took none, or the run never got there. */
+  unassistedOutcome(wave: string): UnassistedOutcome | undefined {
+    return this.unassisted.get(wave);
+  }
+
   /** Inverted floor-gate findings (advisory, spec-0023). */
   floorGateFindings(): readonly string[] {
     return this.floorFindings;
+  }
+
+  /**
+   * Who felled `wave`'s bodies, as its last census answered.
+   *
+   * `unattributed` when no census answered during the fight — which is a fact
+   * about the probe, and must never be readable as a clean win.
+   */
+  waveAttribution(wave: string): FightAttribution {
+    return (
+      this.waveAttributions.get(wave) ?? {
+        kind: "unattributed",
+        reason: "no wave census answered during this run's fight at this encounter",
+      }
+    );
   }
 
   /** Bodies that did not fall inside their encounter's own melee budget. */
@@ -3803,13 +4167,28 @@ export class MineflayerExecutor implements StepExecutor {
     }
     if (assistPolicy(enc) === "unassisted-first") {
       this.encounterPhases.set(enc.wave, "unassisted");
-      const won = await this.attemptUnassisted(step, enc);
-      const finding = floorFinding(enc, { attempted: true, won });
-      if (finding) {
+      const outcome = await this.attemptUnassisted(step, enc);
+      this.unassisted.set(enc.wave, outcome);
+      process.stderr.write(
+        `[floor] ${step.wave}: unassisted outcome \`${outcome.result}\` — opened at ` +
+          `${outcome.healthAtStart.toFixed(1)}/${outcome.maxHealth} health, ` +
+          `${outcome.engaged} body/bodies engaged, ${outcome.killed} down\n`,
+      );
+      // The attribution the attempt's own last census gave. `unattributed` only
+      // when no census answered during it, which is a fact about the probe rather
+      // than about the fight, and says so. `unmeasuredFloorFinding` takes no
+      // attribution: it fires exactly where no attempt was made, and there is
+      // nothing there to attribute.
+      const attribution = this.waveAttribution(enc.wave);
+      for (const finding of [
+        floorFinding(enc, outcome, attribution),
+        unmeasuredFloorFinding(enc, outcome),
+      ]) {
+        if (finding === undefined) continue;
         this.floorFindings.push(finding);
         process.stderr.write(`[floor] ${finding}\n`);
       }
-      if (won) {
+      if (outcome.result === "won") {
         this.encounterPhases.set(enc.wave, "cleared");
         return;
       }
@@ -3858,7 +4237,7 @@ export class MineflayerExecutor implements StepExecutor {
       }
       const trial = await this.fightActor(a, objectiveId);
       this.actorTrials.push(trial);
-      const finding = actorFloorFinding(trial);
+      const finding = actorFloorFinding(trial, actorAttribution());
       if (finding) {
         this.floorFindings.push(finding);
         process.stderr.write(`[floor] ${finding}\n`);
@@ -3989,23 +4368,70 @@ export class MineflayerExecutor implements StepExecutor {
   }
 
   /**
-   * One honest, unassisted attempt at a billed encounter. Returns whether the bot
-   * cleared it; a death or a timeout is a normal `false`, not a failed run — the
-   * bot losing a souls fight is the DESIGN, and spec-0023 downgraded bot melee
-   * competence from gate-critical to telemetry precisely so it could be.
+   * **The floor measurement never opens over an unrecovered death.**
+   *
+   * The die-retry stage runs first and dies on purpose, so the bot can arrive at
+   * this line still on the death screen. Opened there, the attempt is charged a
+   * `died` it did not take — the gallery produced exactly that: `opened at
+   * 0.0/20 health, 0 bodies engaged, 0 down`, which is a verdict about a delve
+   * written by the harness leaving its own bot dead. The same rule the death
+   * loop's trials already keep.
+   *
+   * Health is NOT settled first, and that is a measurement rather than an
+   * omission. Standing next to a live elite waiting to regenerate is not
+   * something a player does and not something the bot survives: made to try it,
+   * the gallery run above was beaten to death during the wait, since
+   * `eatDecision` correctly refuses to eat with a hostile in reach. And full
+   * health does not decide the fight anyway — two gallery runs opened at
+   * `20.0/20` and both ended `died`. So the health is RECORDED, which is what
+   * makes two samples comparable, and not manufactured.
    */
-  private async attemptUnassisted(step: KillStep, enc: Encounter): Promise<boolean> {
+  private async openFloorMeasurement(step: KillStep): Promise<number | undefined> {
+    if (this.death !== undefined) {
+      process.stderr.write(
+        `[floor] ${step.wave}: the bot was still dead when the unassisted attempt opened — ` +
+          `recovering first, because a corpse measures nothing\n`,
+      );
+      await this.recoverFromDeath();
+    }
+    if (this.death !== undefined) return undefined;
+    return this.requireBot().health;
+  }
+
+  private async attemptUnassisted(step: KillStep, enc: Encounter): Promise<UnassistedOutcome> {
+    const seen = (): { engaged: number; killed: number } => {
+      const e = this.engagements.get(step.wave);
+      return { engaged: e?.engaged.size ?? 0, killed: e?.killed ?? 0 };
+    };
+    const opened = await this.openFloorMeasurement(step);
+    if (opened === undefined) {
+      return {
+        result: "not-attempted",
+        healthAtStart: 0,
+        maxHealth: PLAYER_MAX_HEALTH,
+        engaged: 0,
+        killed: 0,
+        detail: "the bot was dead when the attempt opened and could not be recovered",
+      };
+    }
+    const healthAtStart = opened;
     process.stderr.write(
-      `[floor] ${step.wave} is billed \`${enc.tier}\` — one unassisted attempt first\n`,
+      `[floor] ${step.wave} is billed \`${enc.tier}\` — one unassisted attempt first, ` +
+        `opening at ${healthAtStart.toFixed(1)}/${PLAYER_MAX_HEALTH} health\n`,
     );
     try {
       await this.fightWave(step);
-      return true;
+      return { result: "won", healthAtStart, maxHealth: PLAYER_MAX_HEALTH, ...seen() };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       process.stderr.write(`[floor] ${step.wave}: unassisted attempt ended — ${detail}\n`);
-      if (this.death) await this.respawnAndRearm();
-      return false;
+      const died = this.death !== undefined;
+      if (died) await this.respawnAndRearm();
+      const counts = seen();
+      // A death is a measurement whatever it engaged; a timeout is one only if the
+      // bot actually reached a body. Nothing else can tell the two apart later.
+      const result: UnassistedResult = died ? "died" : counts.engaged > 0 ? "held" : "unengaged";
+      return { result, healthAtStart, maxHealth: PLAYER_MAX_HEALTH, detail, ...counts };
     }
   }
 
@@ -4144,18 +4570,29 @@ export class MineflayerExecutor implements StepExecutor {
       const trial = openTrial(enc, attempt, phase);
       this.trials.push(trial);
       try {
+        // A cutscene cannot be allowed to eat this death. The encounter's own
+        // objective completion may start one, and a cutscene's first act is
+        // `gamemode spectator @a` — so a trade that finished the wave hands the
+        // next scripted death an invulnerable body, `/damage` does nothing, and
+        // the stage used to report that as a missing op.
+        await this.awaitControlForScriptedDeath(step, enc);
         const seq = this.deathSeq;
         // What the bot carries INTO the death — the baseline `keep_inventory` is
         // judged against on the way out.
         this.itemsBeforeDeath = bot.inventory.items().length;
+        const chatFrom = this.recentChat.length;
         bot.chat(scriptedDeathCommand());
         if (!(await this.awaitDeathAfter(seq, RESPAWN_TIMEOUT_MS))) {
-          // The bot is opped for exactly this command; if no death followed, the
-          // command was refused (or the op seed drifted) and the stage proves
-          // nothing. Fail the trial rather than walk a loop nobody opened.
-          trial.abortedWith =
-            `the scripted death never landed within ${RESPAWN_TIMEOUT_MS}ms — ` +
-            `\`${scriptedDeathCommand()}\` was refused (is the bot opped?)`;
+          // No death followed, so the stage proves nothing and the trial fails —
+          // but it fails saying what it SAW. The bot is opped and receives the
+          // server's own answer on the chat stream, and its gamemode decides
+          // whether the command could ever have worked.
+          trial.abortedWith = scriptedDeathRefusal(
+            scriptedDeathCommand(),
+            RESPAWN_TIMEOUT_MS,
+            this.gameModeNow(),
+            this.recentChat.slice(chatFrom),
+          );
           throw new Error(`die-retry: ${trial.abortedWith}`);
         }
         trial.cause = this.death?.likelyCause;
@@ -4239,6 +4676,63 @@ export class MineflayerExecutor implements StepExecutor {
   }
 
   /**
+   * The gamemode the client currently believes it is in, as a plain string.
+   *
+   * Widened deliberately: mineflayer's own type for `bot.game.gameMode` lists
+   * `survival | creative | spectator` and omits `adventure`, which is the mode every
+   * delve actually runs in. Comparing against the mode a delve uses is not an
+   * unintentional comparison; the library's enumeration is short.
+   */
+  private gameModeNow(): string | undefined {
+    return this.bot?.game?.gameMode;
+  }
+
+  /**
+   * Hold until the bot is a body a scripted death can reach — out of the spectator
+   * a cutscene put it in.
+   *
+   * The bound is the campaign's own number, never one invented here: a step whose
+   * completion fires a `Cutscene` carries `cutscene_seconds` in
+   * `critical-path.json`, and a `kill` step carries it exactly as a walking step
+   * does. The sequencer already waits it out AFTER a step; nothing waited it out
+   * inside one, which is where the die-retry stage lives — the general mechanism
+   * was there and its binding did not reach this caller. The grace on top is the
+   * same {@link awaitCutscene} uses.
+   *
+   * Bounded, and it never fails: a window that outlasts what the build declared is
+   * a finding, and the finding is the refusal {@link scriptedDeathRefusal} writes
+   * when the death then does not land — which says the gamemode it saw.
+   */
+  private async awaitControlForScriptedDeath(step: KillStep, enc: Encounter): Promise<void> {
+    this.requireBot();
+    if (this.gameModeNow() === CONTROLLED_GAMEMODE) return;
+    const declaredMs = (step.cutsceneSeconds ?? 0) * 1000;
+    const budget = declaredMs + this.cutsceneGraceMs;
+    const started = Date.now();
+    const deadline = started + budget;
+    process.stderr.write(
+      `[die-retry] ${enc.wave}: the bot is in \`${this.gameModeNow() ?? "?"}\`, not ` +
+        `\`${CONTROLLED_GAMEMODE}\` — waiting out the cutscene before scripting a death ` +
+        `(${step.cutsceneSeconds ?? 0}s declared + ${this.cutsceneGraceMs}ms grace)\n`,
+    );
+    while (Date.now() < deadline) {
+      if (this.death) throw this.death;
+      if (this.gameModeNow() === CONTROLLED_GAMEMODE) {
+        process.stderr.write(
+          `[die-retry] ${enc.wave}: control returned after ${Date.now() - started}ms\n`,
+        );
+        return;
+      }
+      await delay(CUTSCENE_POLL_MS);
+    }
+    process.stderr.write(
+      `[die-retry] ${enc.wave}: still \`${this.gameModeNow() ?? "?"}\` after ${budget}ms — ` +
+        `scripting the death anyway, so the refusal below says what was seen rather than ` +
+        `this wait swallowing it\n`,
+    );
+  }
+
+  /**
    * Wait for a death NEWER than `seq` — the harness's own scripted one.
    *
    * Deliberately not {@link waitFor}, which THROWS the recorded
@@ -4294,13 +4788,16 @@ export class MineflayerExecutor implements StepExecutor {
   }
 
   /**
-   * Does the wave still stand? Asks the SERVER, by tag.
+   * How many of the wave stand? Asks the SERVER, by tag, and records the answer.
    *
-   * Every terminal condition in `fightWave` is a guess made from shapes — "a mob
-   * the bot hit winked out near the anchor", "everything it engaged is down and
-   * nothing hostile is close". None of them can tell a wave mob from any other
-   * mob, because the client cannot see the wave tag. On the drowned bell that
-   * cost the campaign a whole round: at the belfry the bot killed one of
+   * This is the kill step's terminal condition and the source of its attribution,
+   * so everything the step decides about the fight comes through here.
+   *
+   * Every OTHER test in `fightWave` is a guess made from shapes — "a mob the bot
+   * hit winked out near the anchor", "everything it engaged is down and nothing
+   * hostile is close". None of them can tell a wave mob from any other mob,
+   * because the client cannot see the wave tag. On the drowned bell that cost the
+   * campaign a whole round: at the belfry the bot killed one of
    * `ambush/the-rafters`' husks, counted it as the Bellkeeper (`confirmed kill:
    * husk#232 (1/1)`), and walked away from a wither skeleton that was still very
    * much alive. `obj/the-keeper` therefore never completed, `quest/the-keeper`
@@ -4308,26 +4805,43 @@ export class MineflayerExecutor implements StepExecutor {
    * `interact` click was adjudicated against an unarmed quest and spent. The
    * click was the SYMPTOM; this was the cause.
    *
-   * So the guesses now only get to END the fight with the server's agreement.
-   * They are still what drives it — the bot can only swing at what it can see —
-   * but "the wave is down" is a fact, and facts come from the census.
+   * The guesses still DRIVE the fight — the bot can only swing at what it can see
+   * — and they still prompt a census. What they no longer do is end the step on
+   * their own, and neither does the bot's tally of confirmed kills: a body that
+   * died where the proximity rule cannot attribute it, or a scripted death that
+   * re-seated the wave under that tally, both leave it unable to reach the wave's
+   * declared size for the rest of the step.
    *
-   * `false` when there is no census to ask (a wave outside the combat plan, or a
-   * census that did not answer): the pre-census terminal conditions then stand
-   * exactly as they did, because refusing to end the fight on a broken probe
-   * would hang the step instead of failing it.
+   * `undefined` when there is nothing to ask (a wave outside the combat plan) or
+   * when the census did not answer — never a zero, which would read as "the wave
+   * is gone" on a broken probe. The watch is not fed in that case, so a probe that
+   * never answers can never clear a fight.
    */
-  private async waveStillStands(step: KillStep, enc: Encounter | undefined): Promise<boolean> {
-    if (!enc) return false;
+  private async pollWaveCensus(
+    step: KillStep,
+    enc: Encounter | undefined,
+    watch: WaveCensusWatch,
+  ): Promise<number | undefined> {
+    if (!enc) return undefined;
     const census = await this.census(enc);
     if (!census) {
       process.stderr.write(
         `[kill ${step.wave}] the wave census did not answer; falling back to what the client ` +
           `can see\n`,
       );
-      return false;
+      return undefined;
     }
-    return census.summary.present > 0;
+    observeCensus(watch, {
+      present: census.summary.present,
+      credited: census.summary.credited,
+    });
+    // Who felled this cohort. `step.count` is the seating the compiler declared
+    // and `spawn_<wave>` wrote; the other two are the server's own answer.
+    this.waveAttributions.set(
+      step.wave,
+      waveAttribution(step.count, census.summary.present, census.summary.credited),
+    );
+    return census.summary.present;
   }
 
   /** Stamp this life's wave mobs so the next census can name the survivors. */

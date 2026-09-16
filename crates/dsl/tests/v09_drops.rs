@@ -2,7 +2,7 @@
 //! boss leaves behind a **declared subset** — usually one worn piece, plus any
 //! quest token the fight yields — never automatically everything.
 //!
-//! Covered here: the version fence (`DW0141`), the worn-piece rule (`DW0490`),
+//! Covered here: the worn-piece rule (`DW0490`),
 //! the tier rule (`DW0491`), and the two halves of the drop-gated `collect`
 //! proof — that the wave really yields the item (`DW0492`) and that the fight is
 //! proven to happen first (`DW0493`).
@@ -10,12 +10,15 @@
 mod common;
 
 use delvewright_dsl::{RawCampaign, check_campaign};
+use std::sync::LazyLock;
 
 /// A v0.9 quests document shaped like the bell remake's gate boss: a boss wave
 /// that wears an axe and a helm, drops **only** the axe, and yields a key the
 /// door quest then collects.
-const QUESTS_V09: &str = r#"{
-  "dsl_version": "0.9.0",
+static QUESTS_V09: LazyLock<String> = LazyLock::new(|| {
+    common::at_dsl_version(
+        r#"{
+  "dsl_version": "%dsl_version%",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {
@@ -54,7 +57,9 @@ const QUESTS_V09: &str = r#"{
       }
     ]
   }
-}"#;
+}"#,
+    )
+});
 
 fn campaign_with_quests(quests: &str) -> RawCampaign {
     RawCampaign {
@@ -69,6 +74,7 @@ fn campaign_with_quests(quests: &str) -> RawCampaign {
         layout_graph: None,
         site_plan: None,
         detail_plan: None,
+        design: None,
     }
 }
 
@@ -83,21 +89,10 @@ fn codes(quests: &str) -> Vec<String> {
 /// and the collect that takes the token off it — validates clean under 0.9.0.
 #[test]
 fn declared_drops_validate_clean() {
-    let diags = check_campaign(&campaign_with_quests(QUESTS_V09));
+    let diags = check_campaign(&campaign_with_quests(QUESTS_V09.as_str()));
     assert!(
         diags.is_empty(),
         "expected zero diagnostics for a v0.9 declared drop, got: {diags:#?}"
-    );
-}
-
-/// `drops[]` (and `dropped_by`) under a pre-0.9 quests version are reserved.
-#[test]
-fn drops_reserved_before_0_9() {
-    let pre = QUESTS_V09.replacen("\"0.9.0\"", "\"0.8.0\"", 1);
-    assert!(
-        codes(&pre).iter().any(|c| c == "DW0141"),
-        "drops must be reserved under 0.8.0 (DW0141): {:#?}",
-        codes(&pre)
     );
 }
 
@@ -272,7 +267,8 @@ fn quest_item_drop_id_is_registry_checked() {
 /// authoritative l10n key inventory and translates like any other line.
 #[test]
 fn quest_item_drop_name_is_inventoried() {
-    let c = delvewright_dsl::parse_campaign(&campaign_with_quests(QUESTS_V09)).expect("parses");
+    let c = delvewright_dsl::parse_campaign(&campaign_with_quests(QUESTS_V09.as_str()))
+        .expect("parses");
     let inv = delvewright_dsl::l10n_inventory(&c);
     assert!(
         inv.contains_key("wave.gate-boss.mob.0.drop.1.name"),

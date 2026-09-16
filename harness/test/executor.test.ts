@@ -5,6 +5,18 @@ import type { Bot } from "mineflayer";
 import { MineflayerExecutor, completionWindowMs, type BotConfig } from "../src/executor.ts";
 import { BotDeathError } from "../src/death.ts";
 import type { AssertCompleteStep } from "../src/critical-path.ts";
+import { lethalTrialFailures, parseDeathPlan } from "../src/death-loop.ts";
+
+/** The `dsl_version` an emitted plan carries.
+ *
+ * The harness never compares it to anything: `death-loop.ts` and `combat.ts`
+ * require a non-empty string and pass it through, and nothing downstream reads
+ * it. So these fixtures name a number that is deliberately NOT the engine's —
+ * a bump moves one file, and this one is not it, and a fixture that started
+ * agreeing with the engine would be claiming a coupling the harness does not
+ * have.
+ */
+const PLAN_VERSION = "0.0.0-fixture";
 
 // Minimal Vec3 stand-in with the methods the executor reads off bot.entity.position.
 class FakeVec3 {
@@ -73,6 +85,11 @@ function attach(bot: FakeBot, env: Record<string, string | undefined> = {}): Min
 
 test("a death event records position + likely cause and stops the pathfinder", () => {
   const bot = new FakeBot();
+  // Deliberately a position where FLOOR and ROUND disagree on both horizontal
+  // axes. The block an entity is in is the floor of its position, and this is
+  // the position a live run measured: a body killed by the west pit died at
+  // x = 12.59, one cell east of a box whose face is at 12.0. Rounding put it in
+  // cell 13 — two cells out — and the death-loop credit rule reads this position.
   bot.entity.position = new FakeVec3(12.4, 65, -3.6);
   const executor = attach(bot);
   // The death message arrives in chat, then the death event fires.
@@ -81,7 +98,9 @@ test("a death event records position + likely cause and stops the pathfinder", (
 
   const diag = executor.deathDiagnostic();
   assert.ok(diag instanceof BotDeathError);
-  assert.deepEqual(diag.position, [12, 65, -4]); // rounded to whole blocks
+  // EXACT. Rounding it produced a triple that is neither the position nor the
+  // cell the body was in, and the death-loop stage read it as a cell.
+  assert.deepEqual(diag.position, [12.4, 65, -3.6]);
   assert.equal(diag.likelyCause, "delve-bot was slain by Zombie");
   assert.equal(bot.pathfinderStops, 1); // in-flight pathfinding aborted
   // …and the stop is ALWAYS paired with a goal reset. mineflayer-pathfinder's `stop()`
@@ -857,9 +876,11 @@ test("a genuinely unwalkable gate leg still fails, naming the gate and its cycle
   );
 });
 
-test("an UNMARKED leg gets no gate retries — a real navigation regression still fails fast", async () => {
-  // The licence to retry comes from the compiler's crossing mark, never from the
-  // harness. A leg with no gate gets no gate handling at all.
+test("a walk with no gates bound gets no gate retries — a real regression still fails fast", async () => {
+  // Patience is licensed by a DECLARED gate, never by the harness: a campaign that
+  // declares none (or a leg the compiler proved crosses none) binds no gate, gets no
+  // assist, and a stall is a stall. `gatesBindingWalk` decides that set; here it has
+  // already answered "nothing", which is what an absent assist means.
   let attempts = 0;
   const goto = async (_spec: GoalSpec, label: string): Promise<void> => {
     if (label.includes("waypoint 2/3") && !label.includes("recovery")) {
@@ -1380,7 +1401,8 @@ test("interact leaves the hand alone when the step requires no item", async () =
 // --- executor tier: reach + timed gate + completion transport -----------------
 
 import type { ReachStep } from "../src/critical-path.ts";
-import { parseWaypoints } from "../src/waypoints.ts";
+import { nextLegWaypoints, parseWaypoints } from "../src/waypoints.ts";
+import { gatesBindingWalk } from "../src/timed-gate.ts";
 
 /**
  * A bot whose every pathfind ends the tide-mill way: the objective's distance
@@ -1502,6 +1524,15 @@ interface ReseatSpec {
   /** Swings these bodies take, whatever their tagging. Without it a tagged body
    * takes `waveHitsToKill` and an untagged bystander takes one. */
   hitsToKill?: number;
+  /**
+   * How many of the freshly seated bodies the WORLD kills the instant they land,
+   * with nobody credited.
+   *
+   * The gallery seats `wave/muster` within a stride of `lethal/east-pit` and a
+   * drop, and on the ladder run that measured this, one of the re-seated cohort
+   * withered two seconds after it appeared and another fell one second later.
+   */
+  worldKills?: number;
 }
 
 /** One wave mob as the fake server publishes it to a client. */
@@ -1567,7 +1598,14 @@ class CombatFakeBot extends InteractFakeBot {
   /** Server-side census state: which mobs wear the brand, and how many censuses
    * have been answered (the sequence the harness tells fresh from stale by). */
   private readonly branded = new Set<number>();
+  /** Ids parked by {@link addBystander}, and the arguments they were parked with. */
+  private readonly bystanders = new Set<number>();
+  private readonly bystanderArgs = new Map<number, [number, number]>();
   private censusSeq = 0;
+  /** The server's credited-kill ledger for the seating in force: `k_reward_<wave>`
+   * adds one per `player_killed_entity`, and `spawn_<wave>` zeroes it. A body the
+   * WORLD kills moves nothing here, which is the whole distinction. */
+  private credited = 0;
 
   constructor() {
     super();
@@ -1596,13 +1634,31 @@ class CombatFakeBot extends InteractFakeBot {
 
   /** Replace the tracked wave with `count` fresh mobs. */
   seat(count: number, opts: ReseatSpec | Omit<ReseatSpec, "count"> = {}): void {
+    // `spawn_<wave>` zeroes the credited-kill ledger: a fresh seating starts a
+    // fresh attribution, so the sweep that cleared the last cohort is not counted
+    // against this one.
+    this.credited = 0;
     this.entities = {};
     for (const id of opts.keepIds ?? []) this.entities[id] = this.makeMob(id, opts);
     const fresh = count - (opts.keepIds?.length ?? 0);
+    const seated: number[] = [];
     for (let i = 0; i < fresh; i++) {
       this.entities[this.nextId] = this.makeMob(this.nextId, opts);
+      seated.push(this.nextId);
       this.nextId += 1;
     }
+    for (const id of seated.slice(0, opts.worldKills ?? 0)) this.worldKill(id);
+    // Bystanders are not of the wave, so the re-seat's tag sweep never touched
+    // them: they are still standing where they were.
+    for (const id of [...this.bystanders]) {
+      const [d, h] = this.bystanderArgs.get(id) ?? [1, 1];
+      this.addBystander(id, d, h);
+    }
+  }
+
+  /** The ids of everything currently wearing the wave tag. */
+  waveIds(): number[] {
+    return this.waveMobs().map((m) => m.id);
   }
 
   private makeMob(id: number, opts: Omit<ReseatSpec, "count">): FakeMob {
@@ -1664,13 +1720,20 @@ class CombatFakeBot extends InteractFakeBot {
         this.emit(
           "messagestr",
           `[dw:census the-drowned-bell wave/gate-assault ${this.censusSeq} ` +
-            `${mobs.length} ${branded} ${damaged}]`,
+            `${mobs.length} ${branded} ${damaged} ${this.credited}]`,
         );
         return;
       }
       return;
     }
     if (!message.startsWith("/damage") || !this.scriptedDeathsLand) return;
+    // A spectator is invulnerable, so a real server does NOTHING with this and
+    // says so. The gallery's muster completion starts two cutscenes, and a
+    // cutscene's first act is `gamemode spectator @a`.
+    if (this.game.gameMode === "spectator") {
+      this.emit("messagestr", "This entity cannot be damaged");
+      return;
+    }
     setTimeout(() => {
       this.died = true;
       this.emit("messagestr", "delve-bot was slain by Vindicator");
@@ -1701,12 +1764,18 @@ class CombatFakeBot extends InteractFakeBot {
   /** Park a mob-shaped entity that is NOT part of the wave: an ambush actor, a
    * neighbouring wave's straggler. Visible to `nearestEntity`, invisible to the
    * census — exactly the drowned bell's belfry. */
-  addBystander(id: number, distance = 1): void {
+  addBystander(id: number, distance = 1, hitsToKill = 1): void {
     const self = this;
+    // A re-seat clears the WAVE (`kill @e[tag=dw_wave_<id>]`) and nothing else, so
+    // a body belonging to no wave outlives it — which is the whole reason one is
+    // parked here. `seat` re-installs these for the same reason.
+    this.bystanders.add(id);
+    this.bystanderArgs.set(id, [distance, hitsToKill]);
     this.entities[id] = {
       id,
       name: "husk",
       height: 2,
+      hitsToKill,
       metadata: { [ZOMBIE_HEALTH_IDX]: FULL_HEALTH },
       get attributes(): Record<string, { value: number }> {
         return { "minecraft:max_health": { value: FULL_HEALTH } };
@@ -1760,12 +1829,30 @@ class CombatFakeBot extends InteractFakeBot {
     const taken = (this.hitsTaken.get(mob.id) ?? 0) + 1;
     this.hitsTaken.set(mob.id, taken);
     if (taken < need) return;
-    const ent = this.entities[mob.id];
+    const ent = this.entities[mob.id] as FakeMob | undefined;
     delete this.entities[mob.id]; // one swing is enough in the fake world
     // A real server announces the removal, and that announcement is what credits
     // a confirmed kill (`entityGone` → `creditsWaveKill`). Without it the fake
     // world could never reproduce the drowned bell's belfry, where a husk's death
     // was credited to the Bellkeeper's wave.
+    if (ent) this.emit("entityGone", ent);
+    // The server's own credit: vanilla grants `player_killed_entity` and
+    // `k_reward_<wave>` records it. Only a PLAYER kill reaches here.
+    if (ent?.waveTagged === true) this.credited += 1;
+  }
+
+  /**
+   * A wave body the WORLD kills — a lethal volume, a fall, a trap, another mob.
+   * Gone from the world and gone from the census, with nobody credited: vanilla
+   * has no trigger for "this entity died", so no advancement fires and the
+   * credited ledger does not move.
+   *
+   * This is the gallery's `wave/muster`, whose three bodies stand within a stride
+   * of `lethal/east-pit` and a drop.
+   */
+  worldKill(id: number): void {
+    const ent = this.entities[id] as FakeMob | undefined;
+    delete this.entities[id];
     if (ent) this.emit("entityGone", ent);
   }
 
@@ -1811,6 +1898,7 @@ function combatPlan(
   count = 1,
   respawnsOnRest = true,
   bodies: readonly EncounterBody[] = [{ kind: "drowned", count, giveUpSwings: 24 }],
+  tier: "ordinary" | "elite" | "boss" = ENCOUNTER.tier,
 ): CombatPlan {
   return {
     version: "0.6.0",
@@ -1821,7 +1909,7 @@ function combatPlan(
         wave: ENCOUNTER.wave,
         objective: ENCOUNTER.objective,
         step: ENCOUNTER.step,
-        tier: ENCOUNTER.tier,
+        tier,
         pos: ENCOUNTER.pos,
         count,
         respawnsOnRest,
@@ -1907,6 +1995,60 @@ test("die-retry assist windows are named in the ledger, not taken silently", asy
     "every die-retry window names its encounter and is closed",
   );
   assert.deepEqual(executor.leakedAssists(), [], "and none of them leaked");
+});
+
+test("a cutscene's spectator window cannot eat a scripted death", async () => {
+  // The gallery, measured: `complete_o_clear_the_muster` fires two cutscenes, and
+  // each one opens with `tag @a add dw_cutscene` + `gamemode spectator @a`. A
+  // mid-fight trade that finishes the wave therefore completes the objective, the
+  // cutscene starts, and the next `/damage @s 1000` hits an invulnerable body. The
+  // stage waited its full respawn timeout and then blamed the op seed.
+  //
+  // The window is the campaign's own number: the `kill` step carries
+  // `cutscene_seconds`, exactly as a walking step does, and the stage now waits it
+  // out before scripting a death.
+  const bot = new CombatFakeBot();
+  const executor = attach(bot, { DELVEWRIGHT_CUTSCENE_GRACE_MS: "2000" });
+  executor.useCampaign("the-drowned-bell");
+  executor.useCombatPlan(combatPlan(), true);
+
+  // The cutscene the fight started: spectator now, control back in a moment.
+  bot.game.gameMode = "spectator";
+  setTimeout(() => {
+    bot.game.gameMode = "adventure";
+  }, 400);
+
+  await executor.kill({ ...KILL_STEP, cutsceneSeconds: 1 });
+
+  const trials = executor.deathTrials();
+  assert.equal(trials.length, 2, "both scripted deaths were taken");
+  assert.deepEqual(
+    trials.map((t) => t.abortedWith),
+    [undefined, undefined],
+    "and neither was abandoned",
+  );
+  assert.ok(
+    trials.every((t) => t.completed),
+    "both loops reached a verdict",
+  );
+});
+
+test("a death that never lands says what it SAW, not what it assumed", async () => {
+  // The window outlasts everything the build declared: the stage scripts the death
+  // anyway rather than swallowing the finding in its own wait, and the refusal
+  // names the gamemode it read and the answer the server gave.
+  const bot = new CombatFakeBot();
+  const executor = attach(bot, { DELVEWRIGHT_CUTSCENE_GRACE_MS: "200" });
+  executor.useCampaign("the-drowned-bell");
+  executor.useCombatPlan(combatPlan(), true);
+  bot.game.gameMode = "spectator"; // and it never comes back
+
+  await assert.rejects(() => executor.kill({ ...KILL_STEP, cutsceneSeconds: 1 }));
+
+  const t = executor.deathTrials()[0]!;
+  assert.match(t.abortedWith ?? "", /spectator/);
+  assert.match(t.abortedWith ?? "", /This entity cannot be damaged/);
+  assert.doesNotMatch(t.abortedWith ?? "", /is the bot opped\?/);
 });
 
 test("a wave that kills the bot mid-trade does not get credited as the scripted death", async () => {
@@ -2698,6 +2840,91 @@ test("killing a bystander beside the fight does not clear the wave", async () =>
   assert.equal(bot.entities[900], undefined, "the bystander died on the way, which is fine");
 });
 
+test("a cohort the world finished is cleared by the SERVER's answer, not the bot's tally", async () => {
+  // The gallery ladder, reduced. `wave/muster` seats three bodies within a stride
+  // of `lethal/east-pit` and a drop: two died to the world before the bot swung,
+  // it felled the third, and its own tally read `1/3` — a number that could never
+  // reach 3 for the rest of the step, because vanilla credits nobody for a mob a
+  // volume kills.
+  //
+  // The bystander is what makes this bind to the CENSUS and to nothing else. It is
+  // mob-shaped, in reach, of no wave, and the encounter states no budget for its
+  // kind, so every client-side test is pinned open: the tally cannot reach the
+  // declared count, `waveEngagementCleared` cannot fire while something hostile is
+  // within 32 blocks, and "no eligible mob remains" is never true. Before the
+  // census became the terminal condition this step burned its whole 90s budget on
+  // a wave that was already down.
+  const bot = new CombatFakeBot();
+  bot.seat(3);
+  bot.reSeat = undefined;
+  const [a, b] = bot.waveIds();
+  bot.worldKill(a!); // withered in the pit
+  bot.worldKill(b!); // hit the ground too hard
+  bot.addBystander(900, 2, 10_000); // in reach, and not going anywhere
+
+  const executor = attach(bot);
+  executor.useCampaign("the-drowned-bell");
+  executor.useCombatPlan(combatPlan(3, false), false);
+
+  const started = Date.now();
+  await executor.kill({ ...KILL_STEP, count: 3 });
+  assert.ok(
+    Date.now() - started < 30_000,
+    "the step ends when the server says the wave is down, not when the budget runs out",
+  );
+  assert.equal(bot.waveIds().length, 0, "the wave really is down");
+  assert.ok(bot.entities[900], "…and the bystander is still standing, unkilled");
+});
+
+test("the floor gate is not told the bot beat a fight the world mostly fought", async () => {
+  // The same cohort, billed `elite`. The advisory this used to print — *the
+  // UNASSISTED bot beat it on its first attempt* — advised the author to make an
+  // encounter HARDER on the strength of one confirmed kill out of three bodies.
+  const bot = new CombatFakeBot();
+  bot.seat(3);
+  bot.reSeat = undefined;
+  const [a, b] = bot.waveIds();
+  bot.worldKill(a!);
+  bot.worldKill(b!);
+
+  const executor = attach(bot);
+  executor.useCampaign("the-drowned-bell");
+  executor.useCombatPlan(combatPlan(3, false, undefined, "elite"), false);
+  await executor.kill({ ...KILL_STEP, count: 3 });
+
+  const [finding, ...rest] = executor.floorGateFindings();
+  assert.deepEqual(rest, [], "one encounter, one finding");
+  assert.match(String(finding), /2 of its 3 bodies died with NO player credited/);
+  assert.match(String(finding), /does not measure the fight/);
+  assert.doesNotMatch(String(finding), /Advisory: raise the stack/);
+});
+
+test("a re-seat resets what the SERVER says, and the step follows the server", async () => {
+  // Finding 1 in its own shape. A scripted die-retry death re-seats a
+  // `respawns_on_rest` wave; the harness's confirmed-kill count starts over on the
+  // new cohort, and two of that cohort land in the pit. The tally therefore reads
+  // `1/3` for the rest of the step, exactly as it did on the gallery.
+  const bot = new CombatFakeBot();
+  bot.seat(3);
+  bot.reSeat = { count: 3, worldKills: 2 };
+  bot.addBystander(900, 2, 10_000);
+
+  const executor = attach(bot);
+  executor.useCampaign("the-drowned-bell");
+  executor.useCombatPlan(combatPlan(3, true, undefined, "elite"), true);
+
+  const started = Date.now();
+  await executor.kill({ ...KILL_STEP, count: 3 });
+  assert.ok(
+    Date.now() - started < 60_000,
+    "the re-seated cohort is judged by the census, not by a counter that restarted",
+  );
+  assert.equal(executor.encounterPhase(KILL_STEP.wave), "cleared");
+  assert.equal(bot.waveIds().length, 0);
+  const [finding] = executor.floorGateFindings();
+  assert.match(String(finding), /died with NO player credited/);
+});
+
 // --- talk-to: the walk-then-trigger contract ----------------------
 
 import type { TalkToStep } from "../src/critical-path.ts";
@@ -3140,4 +3367,412 @@ test("an encounter that states no budget for a kind gives up on nothing", async 
 
   assert.deepEqual(executor.unkillableFindings(), []);
   assert.equal(bot.calls.filter((c) => c === "attack").length, 6);
+});
+
+// --- the death loop: a trial that opens over a corpse -----------------------
+
+/** A body that can be driven: the walk in uses raw controls, never the pathfinder. */
+class DrivableFakeBot extends FakeBot {
+  async lookAt(): Promise<void> {}
+  setControlState(): void {}
+  clearControlStates(): void {}
+  /** Open air, so the declared box has cells a body could be in. */
+  override blockAt(): { name: string; boundingBox: string } | null {
+    return this.chunkLoaded ? { name: "air", boundingBox: "empty" } : null;
+  }
+}
+
+/** The smallest plan the stage will walk: one volume, one `on_death`, no stake. */
+function oneVolumePlan(): ReturnType<typeof parseDeathPlan> {
+  return parseDeathPlan({
+    format_version: 2,
+    version: PLAN_VERSION,
+    campaign_id: "probe",
+    lethal_volumes: [
+      {
+        id: "lethal/the-pit",
+        region: { lo: [4, 65, 8], hi: [6, 65, 10] },
+        // The volume widened by a player's own half-width, as the compiler
+        // computes it: one cell out horizontally, `ceil(height)` down.
+        keep_out: { lo: [3, 64, 7], hi: [7, 65, 11] },
+        message: "The floor gives way.",
+        message_key: null,
+        damage_type: "minecraft:fall",
+      },
+    ],
+    on_death: { effects: 1, drops_stake: [] },
+    stakes: [],
+    placement: { seats: [], regions: [], rows: [] },
+    binding: {
+      lethal_volumes: 1,
+      on_death_effects: 1,
+      stakes: 0,
+      respawn_seats: 0,
+      placement_rows: 0,
+      unbound: false,
+      reason: null,
+    },
+  });
+}
+
+/** The gallery's west pit, as `delvec` emits it — the volume this rule was measured on. */
+function westPitPlan(): ReturnType<typeof parseDeathPlan> {
+  return parseDeathPlan({
+    format_version: 2,
+    version: PLAN_VERSION,
+    campaign_id: "gallery",
+    lethal_volumes: [
+      {
+        id: "lethal/west-pit",
+        region: { lo: [1, 63, 2], hi: [3, 67, 4] },
+        // The compiler's own answer for this box, carried as `delvec` emits it:
+        // the volume widened by a player's half-width, one cell out
+        // horizontally and `ceil(height)` down.
+        keep_out: { lo: [0, 62, 1], hi: [4, 67, 5] },
+        message: "The floor in the west corner is not a floor.",
+        message_key: "lethal.west-pit.message",
+        damage_type: "minecraft:fall",
+      },
+    ],
+    on_death: { effects: 1, drops_stake: [] },
+    stakes: [],
+    placement: { seats: [], regions: [], rows: [] },
+    binding: {
+      lethal_volumes: 1,
+      on_death_effects: 1,
+      stakes: 0,
+      respawn_seats: 0,
+      placement_rows: 0,
+      unbound: false,
+      reason: null,
+    },
+  });
+}
+
+test("a lethal trial that opens over an unrecovered death is not credited to the volume", async () => {
+  // The previous trial's walk back killed the bot and nothing recovered from it.
+  // `stepInto` rethrows the death latch on its first line, so the bot never takes
+  // a step; the wait for a NEW death then runs out, and `deathPos` is read off the
+  // OLD death — which is how a volume that kills a real player at every cell of
+  // its box (measured live, 75 of 75) was reported as one the bot stood in and
+  // survived. The repair recovers first, so the trial is a trial.
+  const bot = new DrivableFakeBot();
+  bot.entity.position = new FakeVec3(0.5, 65, 0.5); // nowhere near the volume
+  const executor = attach(bot);
+  executor.useDeathPlan(oneVolumePlan());
+  bot.emit("death"); // the corpse the previous trial left behind
+  bot.emit("spawn"); // …and the respawn nobody consumed
+
+  // The death this trial is actually about, delivered while the walk in is
+  // driving. Recorded only if the latch was cleared first — `recordDeath` returns
+  // early while a death is already held.
+  setTimeout(() => {
+    bot.entity.position = new FakeVec3(5.4, 65, 9.4);
+    bot.emit("death");
+    setTimeout(() => bot.emit("spawn"), 100);
+  }, 300);
+
+  await executor.runDeathLoop();
+
+  const trials = executor.deathLoopTrials();
+  assert.equal(trials.length, 1);
+  const t = trials[0]!;
+  assert.equal(t.died, true, "the death inside the volume is this volume's kill");
+  assert.deepEqual(
+    t.deathPos,
+    [5.4, 65, 9.4],
+    "and the position is THIS death's, not the last one's",
+  );
+  assert.equal(t.enteredVolume, true);
+  assert.equal(t.abandoned, undefined);
+});
+
+test("a volume whose every cell is filled by a block is a finding, not a ten-second drive", async () => {
+  // `FakeBot.blockAt` answers with a solid block everywhere, which is the shape of
+  // the gallery's east-pit corner: the cell nearest the approach, and one no body
+  // can be in. Before, the walk drove at it until its deadline and the trial then
+  // said the bot had stood there.
+  const bot = new DrivableFakeBot();
+  bot.entity.position = new FakeVec3(0.5, 65, 0.5);
+  const executor = attach(bot);
+  bot.blockAt = () => ({ name: "stone", boundingBox: "block" });
+  executor.useDeathPlan(oneVolumePlan());
+
+  await executor.runDeathLoop();
+
+  const t = executor.deathLoopTrials()[0]!;
+  assert.equal(t.enteredVolume, false);
+  assert.equal(t.died, false);
+  assert.match(t.abandoned ?? "", /can hold a body/);
+});
+test("a kill the volume's own selector made is credited, whatever cell the body's feet were in", async () => {
+  // The gallery's west pit, measured on the ladder: the volume killed the bot and
+  // its own promised line reached that player, and the stage reported the death as
+  // OUTSIDE the volume and refused to credit it. Two readings were wrong and this
+  // is both of them at once. `onDeath` rounded the position, so a body at z = 4.6
+  // (cell 4, inside the box) was recorded at 5; and the credit asked `inBox`, a
+  // CELL question, where the server had asked whether a 0.6-wide hitbox intersects
+  // [lo, hi + 1] — which reaches a third of a block past the face either way.
+  //
+  // Here the body dies at z = 5.1: cell 5, outside the declared box, inside the
+  // reach of the selector that killed it. The volume's kill is the volume's.
+  const bot = new DrivableFakeBot();
+  bot.entity.position = new FakeVec3(0.5, 65, 0.5);
+  const executor = attach(bot);
+  executor.useDeathPlan(westPitPlan());
+
+  setTimeout(() => {
+    bot.entity.position = new FakeVec3(3.5, 65, 5.1);
+    bot.emit("death");
+    setTimeout(() => bot.emit("spawn"), 100);
+  }, 200);
+
+  await executor.runDeathLoop();
+
+  const t = executor.deathLoopTrials()[0]!;
+  assert.equal(t.abandoned, undefined, "a kill by this volume is not an abandoned trial");
+  assert.equal(t.died, true);
+  assert.deepEqual(t.deathPos, [3.5, 65, 5.1], "recorded exactly, never rounded to a cell");
+  assert.equal(t.enteredVolume, true);
+  assert.deepEqual(lethalTrialFailures(t).filter((f) => /did NOT die|never OBSERVED/.test(f)), []);
+});
+
+test("a death beyond the volume's reach is still refused, and the refusal says reach", async () => {
+  // The other direction, and it is what keeps the widened rule from crediting any
+  // lethal accident anywhere: a third of a block further out is a body the
+  // selector cannot match.
+  const bot = new DrivableFakeBot();
+  bot.entity.position = new FakeVec3(0.5, 65, 0.5);
+  const executor = attach(bot);
+  executor.useDeathPlan(westPitPlan());
+
+  setTimeout(() => {
+    bot.entity.position = new FakeVec3(3.5, 65, 5.4);
+    bot.emit("death");
+    setTimeout(() => bot.emit("spawn"), 100);
+  }, 200);
+
+  await executor.runDeathLoop();
+
+  const t = executor.deathLoopTrials()[0]!;
+  assert.equal(t.died, false);
+  assert.match(t.abandoned ?? "", /OUTSIDE the reach of the declared volume/);
+  assert.match(t.abandoned ?? "", /\[3\.50, 65\.00, 5\.40\]/);
+});
+
+// --- a walk with no proven leg crosses a timed gate by the same rule -----------
+
+/**
+ * A fake world whose only route to the near lip runs through a declared timed door.
+ *
+ * The door's clock is driven by the world, not by a wall-clock timer: it fills the
+ * region until the harness has actually LOOKED at it once, then clears — so the
+ * closed→open edge the crossing rule waits for really happens, exactly once, with no
+ * race for a test to lose. While it is filled every pathfind answers `No path to the
+ * goal!` (vanilla A* over a filled region, the ladder's own message) and its cells
+ * read as a solid block; once cleared a pathfind walks the bot to its goal.
+ */
+class GatedApproachBot extends DrivableFakeBot {
+  registry = registryFor("1.21.11");
+  health = 20;
+  food = 20;
+  entities: Record<number, unknown> = {};
+  inventory = { items: (): Array<{ name: string; type: number }> => [] };
+  /** The door's state at each pathfind, in order. */
+  gotoStates: string[] = [];
+  /** The gallery's mid door: a 1×3×1 plug at [5, 65..67, 9]. */
+  private readonly door = { x: 5, y0: 65, y1: 67, z: 9 };
+  private looks = 0;
+  private get shut(): boolean {
+    return this.looks === 0;
+  }
+  override blockAt(pos?: { x: number; y: number; z: number }): {
+    name: string;
+    boundingBox: string;
+  } | null {
+    if (!this.chunkLoaded) return null;
+    if (
+      pos !== undefined &&
+      pos.x === this.door.x &&
+      pos.z === this.door.z &&
+      pos.y >= this.door.y0 &&
+      pos.y <= this.door.y1
+    ) {
+      if (this.shut) {
+        this.looks++;
+        return { name: "polished_deepslate", boundingBox: "block" };
+      }
+    }
+    return { name: "air", boundingBox: "empty" };
+  }
+  override pathfinder = {
+    stop: (): void => {
+      this.pathfinderStops += 1;
+      this.pathfinderCalls.push("stop");
+    },
+    setGoal: (goal: unknown): void => {
+      this.pathfinderCalls.push(goal === null ? "setGoal(null)" : "setGoal");
+    },
+    setMovements: (): void => {},
+    thinkTimeout: 0,
+    goto: async (goal: { x: number; y: number; z: number }): Promise<void> => {
+      this.gotoStates.push(this.shut ? "shut" : "open");
+      if (this.shut) throw new Error("No path to the goal!");
+      this.entity.position = new FakeVec3(goal.x + 0.5, goal.y, goal.z + 0.5);
+    },
+  };
+  /** The step INTO the volume is raw controls, so the drive lands the body there
+   * and the pit does what a pit does. Only reached once the approach succeeded. */
+  private stepped = false;
+  override setControlState(): void {
+    if (this.stepped) return;
+    this.stepped = true;
+    setTimeout(() => {
+      this.entity.position = new FakeVec3(2.5, 65, 3.5); // inside the west pit
+      this.emit("death");
+      setTimeout(() => this.emit("spawn"), 50);
+    }, 0);
+  }
+}
+
+/** The west pit with a placement row, so the stage actually walks to a near lip. */
+function westPitPlanWithLip(): ReturnType<typeof parseDeathPlan> {
+  return parseDeathPlan({
+    format_version: 2,
+    version: PLAN_VERSION,
+    campaign_id: "gallery",
+    lethal_volumes: [
+      {
+        id: "lethal/west-pit",
+        region: { lo: [1, 63, 2], hi: [3, 67, 4] },
+        // The same box `westPitPlan` carries, and the same answer: the volume
+        // widened by a player's half-width, one cell out horizontally and
+        // `ceil(height)` down. Derived from the region rather than copied —
+        // `metrics::keep_out_box` on [1,63,2]..=[3,67,4] with a 0.6 x 1.8 body.
+        keep_out: { lo: [0, 62, 1], hi: [4, 67, 5] },
+        message: "The floor in the west corner is not a floor.",
+        message_key: "lethal.west-pit.message",
+        damage_type: "minecraft:fall",
+      },
+    ],
+    on_death: { effects: 1, drops_stake: [] },
+    stakes: [],
+    placement: {
+      seats: [{ cp: 0, label: "spawn", cell: [0, 65, 0] }],
+      regions: [
+        { label: "west-pit", lethal: true, volume: "lethal/west-pit", region: { lo: [1, 63, 2], hi: [3, 67, 4] } },
+      ],
+      // The near lip, as `stake::choose_anchor` now picks one: the nearest cell
+      // to the region that lies OUTSIDE the keep-out. This row used to name
+      // [1, 65, 5], which is one step past the pit's south face and inside the
+      // keep-out — a cell the volume kills from, and so a goal the navigator
+      // itself refuses. Its `box_dist2` to the region is 4, the same as the
+      // cell it replaces had before the keep-out existed: the lip moved one
+      // cell out because a body has a width, not because the scenario changed.
+      rows: [{ seat: 0, region: 0, anchor: [1, 65, 6] }],
+    },
+    binding: {
+      lethal_volumes: 1,
+      on_death_effects: 1,
+      stakes: 0,
+      respawn_seats: 1,
+      placement_rows: 1,
+      unbound: false,
+      reason: null,
+    },
+  });
+}
+
+/** The gallery's three doors, as `delvec` exports them, on a leg that goes elsewhere. */
+const GALLERY_DOORS = {
+  version: PLAN_VERSION,
+  campaign_id: "gallery",
+  timed_gates: [
+    {
+      id: "timed-gate/side-door",
+      region: { min: [9, 65, 9], max: [9, 67, 9] },
+      block: "minecraft:polished_deepslate",
+      open_ticks: 40,
+      closed_ticks: 60,
+      phase: 10,
+    },
+    {
+      id: "timed-gate/mid-door",
+      region: { min: [5, 65, 9], max: [5, 67, 9] },
+      block: "minecraft:polished_deepslate",
+      open_ticks: 40,
+      closed_ticks: 60,
+      phase: 20,
+    },
+    {
+      id: "timed-gate/inner-door",
+      region: { min: [7, 65, 9], max: [7, 67, 9] },
+      block: "minecraft:polished_deepslate",
+      open_ticks: 40,
+      closed_ticks: 60,
+      phase: 30,
+      crush: true,
+    },
+  ],
+  legs: [
+    {
+      from: [0, 65, 0],
+      to: [40, 65, 40],
+      waypoints: [[20, 65, 20]],
+      timed_gates: ["timed-gate/side-door"],
+    },
+  ],
+};
+
+test("a walk with NO proven leg waits out a shut declared gate instead of failing", async () => {
+  // The ladder's line, from the death-loop stage on the gallery: `lethal/west-pit:
+  // … the near lip [1, 65, 5] could not be reached: failed death-loop approach …
+  // No path to the goal!` — the bot standing at the mouth of `anchor/timed-door-mid`
+  // while all three doors were shut. The approach to a placement-table lip is no
+  // critical-path leg, so the compiler marks no gate on it; before this the walk got
+  // no gate assist at all and read a shut clock as broken geometry.
+  const bot = new GatedApproachBot();
+  bot.entity.position = new FakeVec3(9.5, 65.0, 17.5);
+  const executor = attach(bot);
+  executor.useDeathPlan(westPitPlanWithLip());
+  executor.useWaypoints(parseWaypoints(GALLERY_DOORS));
+
+  await executor.runDeathLoop();
+
+  const t = executor.deathLoopTrials()[0]!;
+  assert.ok(
+    !(t.abandoned ?? "").includes("could not be reached"),
+    `the approach crossed the door: ${t.abandoned ?? "(no fault)"}`,
+  );
+  assert.equal(t.enteredVolume, true, "and the trial got to make its measurement");
+  // The proof it was the GATE rule that carried it: the walk failed while the door
+  // was filled and was retried only after the region read clear.
+  assert.ok(bot.gotoStates.includes("shut"), bot.gotoStates.join(","));
+  assert.ok(bot.gotoStates.includes("open"), bot.gotoStates.join(","));
+});
+
+test("a matched leg still binds only the gates the compiler proved it crosses", async () => {
+  // The narrowing survives: the declared table is the authority only where there is
+  // no proven route. A leg the compiler marked keeps its own subset, so a walk is
+  // never charged patience for a door on the other side of the map.
+  const wp = parseWaypoints(GALLERY_DOORS);
+  const hit = nextLegWaypoints(wp.legs, 0, [40, 65, 40]);
+  assert.equal(hit.matched, true);
+  assert.deepEqual(
+    gatesBindingWalk(hit.matched, hit.timedGates, wp.timedGates).gates.map((g) => g.id),
+    ["timed-gate/side-door"],
+  );
+  // …and the same walk with no leg behind it takes the declared table, less the
+  // crush door, which has no compiler-pinned mouth to stage from.
+  const miss = nextLegWaypoints(wp.legs, 0, [1, 65, 5]);
+  assert.equal(miss.matched, false);
+  const binding = gatesBindingWalk(miss.matched, miss.timedGates, wp.timedGates);
+  assert.deepEqual(
+    binding.gates.map((g) => g.id),
+    ["timed-gate/side-door", "timed-gate/mid-door"],
+  );
+  assert.deepEqual(
+    binding.withheld.map((g) => g.id),
+    ["timed-gate/inner-door"],
+  );
 });

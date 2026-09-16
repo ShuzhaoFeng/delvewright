@@ -186,3 +186,91 @@ impl Placement {
         !matches!(self, Self::SitePlan)
     }
 }
+
+/// **What declares how big this campaign's map is** — asked once, by both tiers
+/// that need the answer.
+///
+/// A horizon that BUILDS terrain has to ring a stated extent, and whether one is
+/// stated is a fact about the documents: validation refuses `DW0855` on it
+/// before a block is placed, and the compiler derives the rectangle from the
+/// same answer. Two implementations of one predicate is two verdicts waiting to
+/// disagree — the tiers already disagreed once about which arm of `DW0855`'s own
+/// message applied — so the predicate lives here and the rectangle is derived
+/// from the authority this names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Extent {
+    /// **The site plan's `region`**: the whole map's design of record, the
+    /// brief's number flowing down. A box outside it is `DW0826`, so nothing a
+    /// part does can grow it.
+    Region,
+    /// **The one piece's own declared region**: the campaign is one area bound
+    /// to one `prefab`, so its whole map is that piece and the piece's declared
+    /// structure size is the map's extent. This is what a *site* is — a building
+    /// with its island, its moat and its banks inside one box — and the
+    /// declaration is the prefab document's, held to the `.nbt` by `DW0888`.
+    OnePiece,
+    /// **Nothing states one.** Two or more areas, or one area drawing from a
+    /// pool, or no area at all: the only candidate left is the union of what
+    /// happens to get placed, which `DW0855` refuses because areas sit on the
+    /// compiler's fixed stride and a pool's footprint is the solver's answer.
+    Unstated,
+}
+
+impl Extent {
+    /// Ask the campaign, once.
+    ///
+    /// The site plan wins where both could apply, for [`Placement::of`]'s
+    /// reason: a campaign carrying both is `DW0839`, and this describes the
+    /// authority the rest of the compiler actually uses.
+    #[must_use]
+    pub fn of(c: &Campaign) -> Self {
+        if c.site_plan.is_some() {
+            Self::Region
+        } else if c.world.content.areas.len() == 1 && c.world.content.areas[0].prefab.is_some() {
+            Self::OnePiece
+        } else {
+            Self::Unstated
+        }
+    }
+
+    /// Whether the campaign states an extent at all — the predicate `DW0855`
+    /// refuses on.
+    #[must_use]
+    pub fn is_stated(self) -> bool {
+        !matches!(self, Self::Unstated)
+    }
+}
+
+/// **Whether this campaign's anchor vocabulary can be known at all** — asked
+/// before any rule refuses a name for not being in it.
+///
+/// A [`Placement::SitePlan`] campaign's anchor names are DERIVED: a `node-` per
+/// place, a `seam-` per barred way, an `unlock-` on the openable side of a
+/// one-sided one, `spawn` for the entry, and every `stations[]` name its nodes
+/// declare — all of them read off `layout-graph.json`. With that document absent
+/// the derived set is not EMPTY, it is **unknown**, and `DW0824` is the finding:
+/// the plan embeds a graph, and there is no graph to embed.
+///
+/// Refusing an anchor reference in that state is this module's own defect,
+/// committed against itself. [`Placement::anchor_remedy`]'s `SitePlan` sentence
+/// tells the author to write one of the derived names or to declare a station on
+/// the node it belongs to; with no graph there are no places, no ways and no
+/// nodes, so **neither half of the remedy can be taken** — the pair rule this
+/// module opens with, applied to the prescription it hands out. Measured on the
+/// gallery's site-plan point with `layout-graph.json` removed: `DW0824` (the
+/// finding, one line) followed by thirteen refusals of names that are all
+/// correct — ten `DW0142`, two `DW0371`, one `DW0343` — each printing that
+/// unreachable sentence, ahead of the one line the author was there to act on.
+///
+/// So every anchor rule asks here first and stays silent, exactly as it stays
+/// silent for a `prefab_pool` whose draw the compiler has not made yet: the
+/// answer is not known at this tier. Nothing is lost by the silence — the run
+/// stops at `DW0824` either way, and every one of those names is re-judged, with
+/// the same rules, the moment the graph exists.
+///
+/// False for a prefab campaign at every state of its documents: its vocabulary
+/// is prefab metadata, which does not come from the map pipeline.
+#[must_use]
+pub fn anchor_vocabulary_unknowable(c: &Campaign) -> bool {
+    matches!(Placement::of(c), Placement::SitePlan) && c.layout_graph.is_none()
+}

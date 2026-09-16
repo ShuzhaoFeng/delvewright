@@ -1,20 +1,20 @@
 //! DSL v0.6 (spec-0014): the `play-sound` effect and the `narrate` `art` style
-//! validate under `0.6.0` and are reserved (`DW0141`) earlier. Sound-event
+//! validate under `0.6.0`. Sound-event
 //! validation (`DW0326`), the unsupported `play-sound at: actor` gate (`DW0335`), and
 //! art-glyph coverage (`DW0328`) are compiler-side checks (see the compiler's
 //! `v06` tests) — the DSL only carries the schema and the version gate.
 
 mod common;
 
-use delvewright_dsl::{RawCampaign, check_campaign};
+use delvewright_dsl::{DSL_VERSION, RawCampaign, check_campaign};
 
 /// A stage-5 `quests` document whose single quest fires a `play-sound` and an
-/// `art`-styled `narrate` on completion. `{ver}` is substituted for the stage's
-/// `dsl_version`.
-fn quests_doc(ver: &str) -> String {
+/// `art`-styled `narrate` on completion, at the one `dsl_version` this engine
+/// accepts.
+fn quests_doc() -> String {
     format!(
         r#"{{
-  "dsl_version": "{ver}",
+  "dsl_version": "{DSL_VERSION}",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {{
@@ -56,31 +56,16 @@ fn campaign_with_quests(quests: &str) -> RawCampaign {
         layout_graph: None,
         site_plan: None,
         detail_plan: None,
+        design: None,
     }
 }
 
 /// `play-sound` + `narrate style: art` validate clean under `dsl_version 0.6.0`.
 #[test]
 fn v06_surface_validates_clean() {
-    let diags = check_campaign(&campaign_with_quests(&quests_doc("0.6.0")));
+    let diags = check_campaign(&campaign_with_quests(&quests_doc()));
     assert!(
         diags.is_empty(),
         "expected zero diagnostics for the v0.6 surface, got: {diags:#?}"
-    );
-}
-
-/// The same surface under a pre-0.6 quests version is reserved → `DW0141`, for
-/// both the `play-sound` effect and the `narrate` `art` style.
-#[test]
-fn v06_surface_reserved_before_0_6() {
-    let diags = check_campaign(&campaign_with_quests(&quests_doc("0.5.0")));
-    let reserved: Vec<_> = diags.iter().filter(|d| d.code == "DW0141").collect();
-    assert!(
-        reserved.iter().any(|d| d.path.ends_with("/type")),
-        "play-sound effect must be reserved under 0.5.0 (DW0141): {diags:#?}"
-    );
-    assert!(
-        reserved.iter().any(|d| d.path.ends_with("/style")),
-        "narrate `style: art` must be reserved under 0.5.0 (DW0141): {diags:#?}"
     );
 }

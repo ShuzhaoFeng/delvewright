@@ -11,22 +11,31 @@ import assert from "node:assert/strict";
 import {
   DeathPlanParseError,
   SUPPORTED_DEATH_PLAN_FORMAT,
+  bodyInVolume,
+  PLAYER_HEIGHT,
+  PLAYER_WIDTH,
   boxCells,
   deathLoopBinding,
   deathLoopBindingFailures,
+  datumsPromised,
   entryCellOf,
+  markerAt,
+  markersAt,
   expectedForfeit,
   inBox,
   lethalTrialFailures,
   openLethalTrial,
   parseDeathPlan,
+  volumeReachesCell,
   seatAtRespawn,
+  stakesDropped,
   tableAnchor,
   type DeathPlan,
   type LethalTrial,
   type LethalVolume,
   type StakeRule,
 } from "../src/death-loop.ts";
+import type { Vec3Tuple } from "../src/critical-path.ts";
 
 /** The economy fixture's plan, as `delvec` really emits it. */
 function planDoc(): Record<string, unknown> {
@@ -38,6 +47,7 @@ function planDoc(): Record<string, unknown> {
       {
         id: "lethal/the-drop",
         region: { lo: [5, 65, 8], hi: [5, 65, 8] },
+        keep_out: { lo: [4, 64, 7], hi: [6, 65, 9] },
         message: "The stone floor gives way beneath you.",
         message_key: "lethal.the-drop.message",
         damage_type: "minecraft:fall",
@@ -109,6 +119,7 @@ function plan(): DeathPlan {
 const VOLUME: LethalVolume = {
   id: "lethal/the-drop",
   region: { lo: [5, 65, 8], hi: [5, 65, 8] },
+  keepOut: { lo: [4, 64, 7], hi: [6, 65, 9] },
   message: "The stone floor gives way beneath you.",
   messageKey: "lethal.the-drop.message",
   damageType: "minecraft:fall",
@@ -135,24 +146,52 @@ function stakeRule(over: Partial<StakeRule> = {}): StakeRule {
   };
 }
 
+/** A second stake the same death drops — a death that takes two things. */
+function relicsRule(): StakeRule {
+  return stakeRule({
+    id: "stake/relics",
+    currency: {
+      state: "state/relics",
+      objective: "dw.s_relics",
+      initial: 3,
+      scope: "player",
+      name: "Relics",
+      nameKey: "state.relics.name",
+    },
+    forfeit: { kind: "fixed", amount: 2 },
+  });
+}
+
 /** A trial in which everything the campaign promised actually happened. */
-function goodTrial(): LethalTrial {
-  const t = openLethalTrial(VOLUME, [5, 65, 8], stakeRule());
+function goodTrial(stakes: readonly StakeRule[] = [stakeRule()]): LethalTrial {
+  const t = openLethalTrial(VOLUME, [5, 65, 8], stakes);
+  t.enteredVolume = true;
   t.died = true;
   t.deathPos = [5, 65, 8];
   t.wordingSeen = true;
-  t.balanceBefore = 5;
-  t.expectedForfeit = 5;
-  t.balanceAfterDeath = 0;
+  for (const w of t.wagers) {
+    const before = w.stake === "stake/relics" ? 3 : 5;
+    w.balanceBefore = before;
+    w.expectedForfeit = expectedForfeit(w.forfeit, before);
+    w.balanceAfterDeath = before - w.expectedForfeit;
+    w.balanceAfterCollect = before;
+  }
   t.respawnPos = [5.5, 65, 4.5];
   t.respawnSeat = "checkpoint anchor `anchor/keeper-stand`";
   t.expectedAnchor = [4, 65, 8];
   t.markerPos = [4.5, 65, 8.5];
+  t.markersFound = 1;
   t.walkedBack = true;
   t.collectClicks = 2;
-  t.balanceAfterCollect = 5;
   t.markerRetired = true;
   return t;
+}
+
+/** The wager for `stake`, in a trial that carries several. */
+function wager(t: LethalTrial, stake: string) {
+  const w = t.wagers.find((x) => x.stake === stake);
+  assert.ok(w, `the trial carries a wager for ${stake}`);
+  return w;
 }
 
 // --- the contract ----------------------------------------------------------
@@ -166,6 +205,98 @@ test("the emitted plan parses, and every declaration survives the round trip", (
   assert.deepEqual(p.stakes[0]!.forfeit, { kind: "all" });
   assert.equal(p.stakes[0]!.currency.objective, "dw.s_embers");
   assert.equal(p.binding.unbound, false);
+});
+
+test("a volume's keep-out box is READ, and it is not the volume", () => {
+  const p = plan();
+  const v = p.volumes[0]!;
+  // The compiler's answer, carried whole. The bot never derives it: the rule
+  // that a body one cell out from a face is inside the volume lives in the
+  // engine, and a second copy of it here is a copy no Rust test reaches.
+  assert.deepEqual(v.keepOut, { lo: [4, 64, 7], hi: [6, 65, 9] });
+  assert.notDeepEqual(v.keepOut, v.region);
+  // …and the difference is exactly the class of death the old rule lost. A body
+  // standing one cell east of this one-cell volume is killed by it and is not in
+  // it, so the cell test says "outside" and the keep-out test says "this
+  // volume".
+  const besideTheFace: readonly [number, number, number] = [6, 65, 8];
+  assert.equal(inBox(besideTheFace, v.region), false);
+  assert.equal(inBox(besideTheFace, v.keepOut), true);
+});
+
+test("`bodyInVolume` and the compiler's exported `keep_out` are the same rule", () => {
+  // **Two implementations of one fact, in two languages, and this is what holds
+  // them together.** `bodyInVolume` is the server's rule re-derived here, over an
+  // exact position; `keep_out` is the compiler's answer to the cell question —
+  // which FEET CELLS a body can meet the volume from — computed by
+  // `dsl::metrics::keep_out_box` and carried in the plan. Neither can replace the
+  // other (one takes a position, one takes a cell), so the honest thing is to
+  // make them provably agree rather than let them coexist.
+  //
+  // The bridge: a cell belongs in `keep_out` exactly when SOME position inside it
+  // satisfies `bodyInVolume`. Sampled at the cell's own interior corners, which
+  // is where the predicate's extremes are — it is monotone in each span.
+  const v = plan().volumes[0]!;
+  const d = 1e-6;
+  const reachable = (cell: Vec3Tuple): boolean => {
+    for (const dx of [d, 1 - d]) {
+      for (const dz of [d, 1 - d]) {
+        if (bodyInVolume([cell[0] + dx, cell[1], cell[2] + dz], v.region)) return true;
+      }
+    }
+    return false;
+  };
+  let examined = 0;
+  const disagreed: string[] = [];
+  for (let x = v.region.lo[0] - 3; x <= v.region.hi[0] + 3; x++) {
+    for (let y = v.region.lo[1] - 3; y <= v.region.hi[1] + 3; y++) {
+      for (let z = v.region.lo[2] - 3; z <= v.region.hi[2] + 3; z++) {
+        const cell: Vec3Tuple = [x, y, z];
+        examined += 1;
+        if (reachable(cell) !== inBox(cell, v.keepOut)) disagreed.push(`[${cell.join(", ")}]`);
+      }
+    }
+  }
+  // Binding, computed from the objects rather than written beside them: the
+  // volume's box grown by three on every side.
+  assert.equal(examined, 7 * 7 * 7);
+  // **The one boundary they read differently, measured rather than predicted.**
+  // Every disagreement sits on a single plane — feet exactly on the volume's
+  // ceiling, `hi.y + 1` — and there are nine of them, the whole horizontal ring
+  // at that height. One cause: `bodyInVolume` compares `min <= hi + 1`
+  // NON-strictly, so a body whose feet touch the ceiling counts as intersecting,
+  // while vanilla's own `AABB::intersects` is strict and `keep_out_box` takes
+  // that reading.
+  //
+  // It is a difference of DIRECTION and each side is pointed the safe way for
+  // what it decides. `keep_out` decides FOOTING, where a generous rule would
+  // refuse ground that is fine, so it is strict. `bodyInVolume` decides CREDIT,
+  // where generous can only fail to disown a real death and can never invent one
+  // out of a body that is not there. The residue is named rather than smoothed
+  // over: on this plane the credit rule would attribute to the volume a death
+  // suffered by a body standing on top of it.
+  //
+  // Asserted as the PROPERTY and not as a list of cells, so it stays true for a
+  // volume of another shape — and with a non-zero count, so it cannot go quietly
+  // vacuous if one side stops answering.
+  const ceiling = v.region.hi[1]! + 1;
+  assert.equal(disagreed.length, 9, `disagreements: ${disagreed.join(" ")}`);
+  assert.deepEqual(
+    disagreed.filter((c) => !c.startsWith(`[`) || !c.includes(`, ${ceiling}, `)),
+    [],
+    "every cell the two readings differ on has its feet exactly on the volume's ceiling",
+  );
+});
+
+test("a plan that omits keep_out is REFUSED — the bot may not guess the ring", () => {
+  const doc = planDoc();
+  const volumes = doc["lethal_volumes"] as Record<string, unknown>[];
+  delete volumes[0]!["keep_out"];
+  assert.throws(() => parseDeathPlan(doc), (e: unknown) => {
+    assert.ok(e instanceof DeathPlanParseError);
+    assert.equal(e.pointer, "/lethal_volumes/0/keep_out");
+    return true;
+  });
 });
 
 test("a plan from a newer contract is REFUSED, never half-read", () => {
@@ -238,12 +369,239 @@ test("box membership and enumeration agree", () => {
   assert.ok(!inBox([2, 0, 1], box));
 });
 
+// The gallery's west pit, exactly as `delvec` emits it — the volume that measured
+// this rule live.
+const WEST_PIT = { lo: [1, 63, 2] as const, hi: [3, 67, 4] as const };
+
+test("a lethal volume reaches a body its declared CELL box does not contain", () => {
+  // `@a[x=1,dx=2,y=63,dy=4,z=2,dz=2]`: `dx` is a span, so the region is
+  // [1,4] x [63,68] x [2,5] in continuous coordinates, and vanilla intersects a
+  // 0.6-wide hitbox against it. A body at z = 5.1 stands in cell 5 — outside the
+  // declared box — with its hitbox reaching back to 4.8, so the selector matches
+  // it and the volume kills it.
+  assert.ok(!inBox([3, 65, 5], WEST_PIT), "cell 5 is outside the declared box");
+  assert.ok(bodyInVolume([3.5, 65, 5.1], WEST_PIT), "and the volume kills a body standing there");
+  // The same body a third of a block further out is beyond the reach, and saying
+  // so is what stops this crediting a death the volume had nothing to do with.
+  assert.ok(!bodyInVolume([3.5, 65, 5.4], WEST_PIT));
+});
+
+test("the reach is the hitbox, on every axis and in both directions", () => {
+  // -x/-z: the hitbox leads by half a width.
+  assert.ok(bodyInVolume([0.75, 65, 3.5], WEST_PIT));
+  assert.ok(!bodyInVolume([0.65, 65, 3.5], WEST_PIT));
+  // -y: a body standing two courses under the floor of the box still has 1.8
+  // blocks of head in it.
+  assert.ok(bodyInVolume([2.5, 61.5, 3.5], WEST_PIT), "a head inside the box is a body inside it");
+  assert.ok(!bodyInVolume([2.5, 61.0, 3.5], WEST_PIT));
+  // +y: the region's ceiling is `hi + 1`, so feet on it are still in it.
+  assert.ok(bodyInVolume([2.5, 68, 3.5], WEST_PIT));
+  assert.ok(!bodyInVolume([2.5, 68.01, 3.5], WEST_PIT));
+});
+
+test("a body at the centre of any cell of the box is one the volume kills", () => {
+  for (const c of boxCells(WEST_PIT)) {
+    assert.ok(
+      bodyInVolume([c[0] + 0.5, c[1], c[2] + 0.5], WEST_PIT),
+      `the volume reaches a body standing at the centre of [${c.join(", ")}]`,
+    );
+  }
+  assert.equal(boxCells(WEST_PIT).length, 45, "45 cells examined, not a subset of them");
+});
+
+/**
+ * **One rule, two languages, and only one of them had a proof.**
+ *
+ * `volumeReachesCell` here and
+ * `delvewright_dsl::metrics::selector_reaches_body_in_cell` in the compiler are
+ * the SAME rule — which cells a lethal volume's selector can kill a standing body
+ * in. They have to be: the compiler uses it to pick the cell it puts a recovery
+ * stake's anchor on, and the harness uses it to decide which cells the bot may
+ * walk through to reach that anchor. If they part company by one cell of shell,
+ * the compiler anchors a stake in a cell the harness routes the bot straight
+ * into, and the delve kills the player at the very place it invited them back to.
+ *
+ * They are also written differently, which is why agreeing by inspection is not
+ * enough. The Rust side sweeps the cell's whole extent — `[cell - half,
+ * cell + 1 + half]` — and asks whether that intersects the region. This side
+ * clamps to the single position inside the cell nearest the volume on each axis
+ * and asks {@link bodyInVolume} once, which is sound only because the volume is
+ * an interval per axis and `bodyInVolume` is monotone in the position. Two
+ * arguments, one answer, and each side's doc comment asserted the other's
+ * agreement with nothing checking it.
+ *
+ * `crates/dsl/tests/metrics.rs::the_cell_rule_agrees_with_a_swept_body_box`
+ * sweeps this exact box over this exact grid and states 441 examined / 175
+ * reached. This is the mirror of it, over the same box and the same grid, with
+ * the same two numbers — so the two implementations are pinned to one measurement
+ * rather than to one another's prose, and either drifting reds on its own side.
+ */
+test("volumeReachesCell agrees with a swept body box, and with the compiler's count", () => {
+  // Every body position the cell can hold, at 1/20 of a block — the thing the
+  // clamp is a shortcut FOR, written out rather than reused.
+  const swept = (c: readonly [number, number, number]): boolean => {
+    const half = PLAYER_WIDTH / 2;
+    for (let i = 0; i <= 20; i++) {
+      for (let k = 0; k <= 20; k++) {
+        const px = c[0] + i / 20;
+        const pz = c[2] + k / 20;
+        const lo = [px - half, c[1], pz - half];
+        const hi = [px + half, c[1] + PLAYER_HEIGHT, pz + half];
+        if ([0, 1, 2].every((a) => lo[a]! <= WEST_PIT.hi[a]! + 1 && hi[a]! >= WEST_PIT.lo[a]!)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  let examined = 0;
+  let reached = 0;
+  for (let x = -1; x <= 5; x++) {
+    for (let y = 61; y <= 69; y++) {
+      for (let z = 0; z <= 6; z++) {
+        const c = [x, y, z] as const;
+        assert.equal(volumeReachesCell(c, WEST_PIT), swept(c), `cell [${c.join(", ")}]`);
+        examined += 1;
+        if (swept(c)) reached += 1;
+      }
+    }
+  }
+  assert.equal(examined, 7 * 9 * 7, "441 cells examined, not a subset of them");
+  // The box is 3x5x3 and the reach is one cell of shell on every axis: 5x7x5.
+  // The compiler's own test states this same 175 over this same box; a rule that
+  // widened or narrowed on either side parts from the other here.
+  assert.equal(reached, 5 * 7 * 5);
+  // …and the reading this replaces — cell containment, which is what
+  // `applyLethalExclusion` and `choose_anchor` both used — covers 3x5x3, so a
+  // collapse back to it loses 130 of the 175.
+  assert.equal(boxCells(WEST_PIT).length, 3 * 5 * 3);
+});
+
+/**
+ * **The navigator and the server must agree on which cells kill.**
+ *
+ * The pathfinder's lethal exclusion asked `inBox`, so it kept the bot out of the
+ * cells inside a volume and left the shell of cells the volume can still reach a
+ * body in wide open. The gallery measured it three runs out of three: the
+ * east-pit trial opened with the bot parked at the west pit's own stake anchor
+ * `[1, 65, 5]` and it was killed at `[3.85, 65.00, 5.14]`, `[3.70, 65.00, 5.29]`
+ * and `[3.63, 65.00, 5.30]` — all cell `[3, 65, 5]`, all outside the declared
+ * box, all inside the reach — and the east pit was reported unexercised every
+ * time.
+ */
+test("the pathfinder's exclusion covers every cell the volume can kill in", () => {
+  // The cell the runs died in. Outside the box; inside the reach.
+  assert.ok(!inBox([3, 65, 5], WEST_PIT), "the box does not contain it");
+  assert.ok(volumeReachesCell([3, 65, 5], WEST_PIT), "and the selector reaches it anyway");
+  // The stake anchor `delvec` used to choose, for the same reason.
+  assert.ok(volumeReachesCell([1, 65, 5], WEST_PIT));
+  // Every cell of the box, and one shell around it on every axis, is excluded —
+  // and nothing beyond that, so the detour this costs is exactly one cell.
+  for (const c of boxCells(WEST_PIT)) {
+    assert.ok(volumeReachesCell(c, WEST_PIT), `[${c.join(", ")}] is in the box`);
+  }
+  assert.ok(volumeReachesCell([0, 65, 1], WEST_PIT), "the -x/-z corner of the shell");
+  assert.ok(volumeReachesCell([4, 65, 5], WEST_PIT), "the +x/+z corner of the shell");
+  assert.ok(volumeReachesCell([2, 62, 3], WEST_PIT), "a course below: the head is inside");
+  assert.ok(volumeReachesCell([2, 68, 3], WEST_PIT), "a course above: the feet are on the ceiling");
+  assert.ok(!volumeReachesCell([5, 65, 5], WEST_PIT), "two out is clear");
+  assert.ok(!volumeReachesCell([2, 65, 6], WEST_PIT), "two out is clear");
+  assert.ok(!volumeReachesCell([2, 61, 3], WEST_PIT), "two below is clear");
+  assert.ok(!volumeReachesCell([2, 69, 3], WEST_PIT), "two above is clear");
+});
+
+test("the cell rule is the body rule, asked of the nearest body the cell can hold", () => {
+  // Not a second reading of the server: every answer above is `bodyInVolume` at
+  // the position inside the cell that comes closest to the volume. Checked here
+  // by sweeping the cell by hand and comparing, so the two cannot drift.
+  const cells: Vec3Tuple[] = [];
+  for (let x = -1; x <= 5; x++) for (let z = 0; z <= 6; z++) cells.push([x, 65, z]);
+  let reached = 0;
+  for (const c of cells) {
+    let any = false;
+    for (let dx = 0; dx <= 1; dx += 0.05) {
+      for (let dz = 0; dz <= 1; dz += 0.05) {
+        if (bodyInVolume([c[0] + dx, c[1], c[2] + dz], WEST_PIT)) any = true;
+      }
+    }
+    assert.equal(volumeReachesCell(c, WEST_PIT), any, `[${c.join(", ")}]`);
+    if (any) reached += 1;
+  }
+  assert.equal(cells.length, 49, "49 cells swept, not a subset of them");
+  assert.equal(reached, 25, "5x5 of them — the 3x3 box plus one cell of shell");
+});
+
 test("the entry cell is the nearest cell of the box, ties broken lexicographically", () => {
   const box = { lo: [0, 0, 0] as const, hi: [2, 0, 0] as const };
   assert.deepEqual(entryCellOf(box, [5, 0, 0]), [2, 0, 0]);
   assert.deepEqual(entryCellOf(box, [1, 0, 5]), [1, 0, 0]);
   // Equidistant from [0,0,0] and [2,0,0] → the lexicographically first wins.
   assert.deepEqual(entryCellOf(box, [1, 0, 0]), [1, 0, 0]);
+});
+
+test("the entry cell is one a BODY can be in — a box corner filled by a block is not one", () => {
+  // The gallery's east pit declares [21,63,20]..[23,67,24]; a 4x4x2 structure
+  // stands in [21,65,20] and [21,66,20], so that corner — the cell nearest every
+  // approach from the west — is the one cell of the seventy-five no player can
+  // occupy. Chosen, the walk in drives at a wall until its deadline.
+  const box = { lo: [21, 65, 20] as const, hi: [21, 65, 22] as const };
+  const solid = (c: readonly number[]): boolean => !(c[0] === 21 && c[1] === 65 && c[2] === 20);
+  assert.deepEqual(entryCellOf(box, [16, 65, 19]), [21, 65, 20], "nearest, with no world to read");
+  assert.deepEqual(
+    entryCellOf(box, [16, 65, 19], (c) => solid(c)),
+    [21, 65, 21],
+    "the nearest cell a body can be in, once the world is readable",
+  );
+  assert.equal(
+    entryCellOf(box, [16, 65, 19], () => false),
+    undefined,
+    "a volume no body can be inside has no entry cell, and that is a finding rather than a guess",
+  );
+});
+
+// --- which body is the stake -----------------------------------------------
+
+const body = (name: string, x: number, y: number, z: number) => ({
+  name,
+  position: { x, y, z },
+});
+
+test("the stake is the interaction NEAREST the anchor, not the first one the map yields", () => {
+  // A stray interaction inside the search radius, offered first. Taking it makes
+  // the reported drift a fact about entity-map iteration order: the gallery's
+  // west-pit stake was reported 3.6 blocks off an anchor it was standing exactly
+  // on, measured at [7.5, 65.0, 18.5] over rcon on four consecutive deaths.
+  const anchor = [7, 65, 18] as const;
+  const stray = body("interaction", 10.6, 65, 20.4);
+  const stake = body("interaction", 7.5, 65, 18.5);
+  const chosen = markerAt(
+    [stray, stake],
+    [body("item_display", 10.6, 65, 20.4), body("item_display", 7.5, 65, 18.5)],
+    anchor,
+    4,
+    0.5,
+  );
+  assert.deepEqual(chosen, stake);
+});
+
+test("a display somewhere in the radius does not vouch for an interaction elsewhere in it", () => {
+  const anchor = [7, 65, 18] as const;
+  const lone = body("interaction", 7.5, 65, 18.5);
+  assert.equal(
+    markerAt([lone], [body("item_display", 10.6, 65, 20.4)], anchor, 4, 0.5),
+    undefined,
+    "the two halves are summoned at one position by one function; anything else is a " +
+      "different object vouching for this one",
+  );
+  assert.deepEqual(
+    markerAt([lone], [body("item_display", 7.5, 65, 18.5)], anchor, 4, 0.5),
+    lone,
+  );
+});
+
+test("nothing outside the search radius is the stake, however well paired", () => {
+  const far = body("interaction", 20.5, 65, 18.5);
+  assert.equal(markerAt([far], [body("item_display", 20.5, 65, 18.5)], [7, 65, 18], 4, 0.5), undefined);
 });
 
 test("the respawn seat is identified from the OBSERVED position, not from engine state", () => {
@@ -279,6 +637,26 @@ test("standing in a lethal volume and surviving is the first and loudest failure
   assert.match(out[0]!, /did NOT die/);
 });
 
+test("a trial that never got the bot inside says THAT, and never that it stood there", () => {
+  // The gallery's east pit reported `the bot stood inside the declared lethal
+  // volume at [21, 65, 20] and did NOT die` over a cell filled by a block. The
+  // volume kills a real player at every one of the seventy-five cells of that
+  // box, measured live; what the run had established was that a walk did not
+  // arrive, and the verdict said something else entirely.
+  const t = goodTrial();
+  t.died = false;
+  t.enteredVolume = false;
+  const out = lethalTrialFailures(t);
+  assert.equal(out.length, 1);
+  assert.doesNotMatch(
+    out[0]!,
+    /stood inside/,
+    "a verdict may not assert a position the trial never observed the bot at",
+  );
+  assert.match(out[0]!, /never OBSERVED inside/);
+  assert.match(out[0]!, /the fault is the walk in, not the volume/);
+});
+
 test("a death with the volume's own wording withheld is a failure", () => {
   const t = goodTrial();
   t.wordingSeen = false;
@@ -287,7 +665,7 @@ test("a death with the volume's own wording withheld is a failure", () => {
 
 test("the forfeit is judged against the DECLARED rule, and names all three numbers", () => {
   const t = goodTrial();
-  t.balanceAfterDeath = 5; // the engine took nothing — the live first-death defect
+  wager(t, "stake/embers").balanceAfterDeath = 5; // the engine took nothing
   const out = lethalTrialFailures(t).join("\n");
   assert.match(out, /was 5 before and 5 after/);
   assert.match(out, /should be 0/);
@@ -314,14 +692,14 @@ test("a stake standing somewhere other than the proven anchor is a failure", () 
 
 test("a double click that credits the purse twice is caught by the amount, not by a race", () => {
   const t = goodTrial();
-  t.balanceAfterCollect = 10; // both clicks paid out
+  wager(t, "stake/embers").balanceAfterCollect = 10; // both clicks paid out
   const out = lethalTrialFailures(t).join("\n");
   assert.match(out, /not idempotent/);
 });
 
 test("a stake that short-changes the player is caught by the same clause", () => {
   const t = goodTrial();
-  t.balanceAfterCollect = 3;
+  wager(t, "stake/embers").balanceAfterCollect = 3;
   assert.match(lethalTrialFailures(t).join("\n"), /short-changed/);
 });
 
@@ -331,8 +709,102 @@ test("a collected stake whose hardware still stands is a failure", () => {
   assert.match(lethalTrialFailures(t).join("\n"), /still standing/);
 });
 
+// --- one death, every datum, one place --------------------------------------
+
+test("a death that forfeits two datums is asserted on BOTH, never on the first declared", () => {
+  // The defect this replaced: `plan.stakes.find(s => dropsStake.includes(s.id))`
+  // asserted the first stake the plan happened to list and reported on the whole
+  // death. On a campaign whose death forfeits four datums that is a quarter of the
+  // promise, and WHICH quarter is not decidable from the campaign at all.
+  const t = goodTrial([stakeRule(), relicsRule()]);
+  assert.deepEqual(
+    t.wagers.map((w) => w.stake),
+    ["stake/embers", "stake/relics"],
+    "one wager per stake the death drops, in the plan's own order",
+  );
+  assert.deepEqual(lethalTrialFailures(t), [], "both promises kept is no finding");
+
+  // The second datum's forfeit is judged, not merely carried.
+  const wrong = goodTrial([stakeRule(), relicsRule()]);
+  wager(wrong, "stake/relics").balanceAfterDeath = 3; // fixed: 2 → should be 1
+  const out = lethalTrialFailures(wrong).join("\n");
+  assert.match(out, /wrong amount for `stake\/relics`/);
+  assert.match(out, /dw\.s_relics/);
+  assert.doesNotMatch(out, /stake\/embers/, "the first datum was correct and is not accused");
+
+  // …and so is the second datum's restoration: one press at one place gives back
+  // every datum that death forfeited there.
+  const short = goodTrial([stakeRule(), relicsRule()]);
+  wager(short, "stake/relics").balanceAfterCollect = 1;
+  const back = lethalTrialFailures(short).join("\n");
+  assert.match(back, /short-changed/);
+  assert.match(back, /`stake\/relics`/);
+});
+
+test("two markers at one anchor is a finding, and the count is what states it", () => {
+  // A death leaves ONE place. Two `minecraft:interaction` boxes there are 1.0 x
+  // 2.0 at one cell centre and therefore coincident: every pick ray enters them
+  // at the same distance and the client resolves the tie by entity iteration
+  // order, so which one answers a right-click is not decidable from the campaign.
+  // A reading that took "the nearest interaction" could never state it — a tie
+  // has no nearest — which is why the trial records how many stood there.
+  const t = goodTrial([stakeRule(), relicsRule()]);
+  t.markersFound = 2;
+  const out = lethalTrialFailures(t).join("\n");
+  assert.match(out, /2 recovery-stake markers stand at \[4, 65, 8\]/);
+  assert.match(out, /one death\s+leaves ONE place/);
+  assert.match(out, /iteration order/);
+
+  // One is the whole population, and it is silent.
+  const one = goodTrial([stakeRule(), relicsRule()]);
+  assert.equal(one.markersFound, 1);
+  assert.deepEqual(lethalTrialFailures(one), []);
+});
+
+test("markersAt returns every paired interaction at the anchor, nearest first", () => {
+  const anchor = [7, 65, 18] as const;
+  const coincidentA = body("interaction", 7.5, 65, 18.5);
+  const coincidentB = body("interaction", 7.5, 65, 18.5);
+  const stray = body("interaction", 10.6, 65, 20.4);
+  const found = markersAt(
+    [stray, coincidentA, coincidentB],
+    [
+      body("item_display", 7.5, 65, 18.5),
+      body("item_display", 10.6, 65, 20.4),
+    ],
+    anchor,
+    4,
+    0.5,
+  );
+  assert.equal(found.length, 3, "every paired box in the radius, not the nearest one");
+  assert.deepEqual(found[0], coincidentA, "…and the nearest first, so `markerAt` is unchanged");
+  assert.deepEqual(found[2], stray);
+  // An unpaired box is still not a marker — the display is the assertion.
+  assert.equal(
+    markersAt([body("interaction", 7.5, 65, 18.5)], [], anchor, 4, 0.5).length,
+    0,
+  );
+});
+
+test("the datums a run promises to examine are counted from the plan, not from the run", () => {
+  // playtest-methodology rule 1: a binding count is only a measurement beside its
+  // population. A run that examined one datum of four looks exactly as green as
+  // one that examined all four unless the population is stated.
+  const p = plan();
+  assert.deepEqual(
+    stakesDropped(p).map((s) => s.id),
+    ["stake/embers"],
+    "`on_death`'s own declaration decides which stakes a death drops",
+  );
+  assert.equal(datumsPromised(p), 1, "one volume x one dropped stake");
+
+  const b = deathLoopBinding(p, [goodTrial([stakeRule(), relicsRule()])]);
+  assert.equal(b.stakesExamined, 1, "one PLACE");
+  assert.equal(b.datumsExamined, 2, "…holding two DATUMS, which is a different number");
+});
+
 test("a trial that could not be exercised is a failure, never a quiet pass", () => {
-  const t = openLethalTrial(VOLUME, [5, 65, 8], stakeRule());
+  const t = openLethalTrial(VOLUME, [5, 65, 8], [stakeRule()]);
   t.abandoned = "the near lip could not be reached";
   const out = lethalTrialFailures(t);
   assert.equal(out.length, 1);
@@ -352,7 +824,7 @@ test("a stage that entered no volume reports VACUOUS, not pass", () => {
 
 test("a stage that entered a volume and saw no death is unbound downstream", () => {
   const p = plan();
-  const t = openLethalTrial(VOLUME, [5, 65, 8], stakeRule());
+  const t = openLethalTrial(VOLUME, [5, 65, 8], [stakeRule()]);
   const b = deathLoopBinding(p, [t]);
   assert.equal(b.deathsObserved, 0);
   assert.match(deathLoopBindingFailures(b).join("\n"), /ZERO\s+player deaths/);
@@ -366,6 +838,7 @@ test("the binding counts what was really examined", () => {
     volumesEntered: 1,
     deathsObserved: 1,
     stakesExamined: 1,
+    datumsExamined: 1,
     seatsMatched: 1,
     walksBack: 1,
   });

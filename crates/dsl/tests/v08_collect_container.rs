@@ -8,19 +8,19 @@
 //! `fill_count` pads the container so it reads full.
 //!
 //! Same contract every reserved field before them kept: declaring any of them
-//! below 0.8.0 is `DW0141`, and absence emits byte-identically to every campaign
+//! absence emits byte-identically to a campaign
 //! written before them.
 
 mod common;
 
-use delvewright_dsl::{RawCampaign, check_campaign, l10n, parse_campaign};
+use delvewright_dsl::{DSL_VERSION, RawCampaign, check_campaign, l10n, parse_campaign};
 
 /// hello-world's quests stage with one `collect` objective, parameterised on the
 /// stage version and on the objective's own adoption fields.
-fn quests(version: &str, fields: &str) -> String {
+fn quests(fields: &str) -> String {
     format!(
         r#"{{
-  "dsl_version": "{version}",
+  "dsl_version": "{DSL_VERSION}",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {{
@@ -54,6 +54,7 @@ fn campaign_with(quests: String) -> RawCampaign {
         layout_graph: None,
         site_plan: None,
         detail_plan: None,
+        design: None,
     }
 }
 
@@ -63,40 +64,10 @@ const ADOPTED: &str = r#", "container": "anchor/door", "item_name": "Cheese", "f
 
 #[test]
 fn the_adoption_surface_validates_clean_at_v08() {
-    let diags = check_campaign(&campaign_with(quests("0.8.0", ADOPTED)));
+    let diags = check_campaign(&campaign_with(quests(ADOPTED)));
     assert!(
         diags.is_empty(),
         "expected zero diagnostics for a v0.8 adopted-container collect, got: {diags:#?}"
-    );
-}
-
-/// Each field is independently reserved before 0.8.0 (`DW0141`): a 0.6/0.7
-/// campaign's chest, its unnamed item and its single stack cannot move by a byte.
-#[test]
-fn each_adoption_field_is_reserved_before_v08() {
-    for (fields, field) in [
-        (r#", "container": "anchor/door""#, "container"),
-        (r#", "item_name": "Cheese""#, "item_name"),
-        (r#", "fill_count": 8"#, "fill_count"),
-    ] {
-        let diags = check_campaign(&campaign_with(quests("0.7.0", fields)));
-        let d = diags
-            .iter()
-            .find(|d| d.code == "DW0141" && d.path.ends_with(field))
-            .unwrap_or_else(|| panic!("expected DW0141 on `{field}`, got: {diags:#?}"));
-        assert!(d.message.contains("0.8.0"), "{}", d.message);
-    }
-}
-
-/// `fill_count: 0` is the default and means "no padding", so writing it out
-/// explicitly is not a declaration of the reserved field — that would make the
-/// serialized form of an ordinary pre-0.8 collect illegal to itself.
-#[test]
-fn an_explicit_zero_fill_count_is_not_a_reserved_declaration() {
-    let diags = check_campaign(&campaign_with(quests("0.7.0", r#", "fill_count": 0"#)));
-    assert!(
-        !diags.iter().any(|d| d.code == "DW0141"),
-        "a zero fill_count declares nothing: {diags:#?}"
     );
 }
 
@@ -104,7 +75,6 @@ fn an_explicit_zero_fill_count_is_not_a_reserved_declaration() {
 #[test]
 fn an_invented_container_anchor_is_dw0142() {
     let diags = check_campaign(&campaign_with(quests(
-        "0.8.0",
         r#", "container": "anchor/no-such-barrel""#,
     )));
     let d = diags
@@ -120,7 +90,6 @@ fn an_invented_container_anchor_is_dw0142() {
 #[test]
 fn padding_past_the_last_slot_is_dw0432() {
     let diags = check_campaign(&campaign_with(quests(
-        "0.8.0",
         r#", "container": "anchor/door", "fill_count": 27"#,
     )));
     let d = diags
@@ -133,7 +102,6 @@ fn padding_past_the_last_slot_is_dw0432() {
     // The exact ceiling validates: 26 padding stacks + the objective's own = 27.
     assert!(
         !check_campaign(&campaign_with(quests(
-            "0.8.0",
             r#", "container": "anchor/door", "fill_count": 26"#,
         )))
         .iter()
@@ -148,7 +116,7 @@ fn padding_past_the_last_slot_is_dw0432() {
 fn a_loot_entry_and_an_adopted_collect_on_one_anchor_is_dw0435() {
     let quests = format!(
         r#"{{
-  "dsl_version": "0.8.0",
+  "dsl_version": "{DSL_VERSION}",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {{
@@ -188,8 +156,9 @@ fn a_loot_entry_and_an_adopted_collect_on_one_anchor_is_dw0435() {
 /// second replaces the first objective's items with its own.
 #[test]
 fn two_adopted_collects_on_one_anchor_is_dw0435() {
-    let quests = r#"{
-  "dsl_version": "0.8.0",
+    let quests = common::at_dsl_version(
+        r#"{
+  "dsl_version": "%dsl_version%",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {
@@ -208,7 +177,8 @@ fn two_adopted_collects_on_one_anchor_is_dw0435() {
       }
     ]
   }
-}"#;
+}"#,
+    );
     let diags = check_campaign(&campaign_with(quests.to_string()));
     assert!(
         diags.iter().any(|d| d.code == "DW0435"),
@@ -220,7 +190,7 @@ fn two_adopted_collects_on_one_anchor_is_dw0435() {
 /// translates like every other player-visible string.
 #[test]
 fn item_name_enters_the_l10n_inventory() {
-    let c = parse_campaign(&campaign_with(quests("0.8.0", ADOPTED))).expect("parses");
+    let c = parse_campaign(&campaign_with(quests(ADOPTED))).expect("parses");
     let inv = l10n::inventory(&c);
     assert_eq!(
         inv.get("obj.open-the-door.cheese.item_name")
@@ -247,7 +217,7 @@ fn stage5_schema_exports_the_adoption_fields() {
 /// from the DSL alone.
 #[test]
 fn an_unadopted_collect_serializes_without_the_new_fields() {
-    let c = parse_campaign(&campaign_with(quests("0.8.0", ""))).expect("parses");
+    let c = parse_campaign(&campaign_with(quests(""))).expect("parses");
     let json = serde_json::to_string(&c.quests.content).expect("serializes");
     for field in ["container", "item_name", "fill_count"] {
         assert!(

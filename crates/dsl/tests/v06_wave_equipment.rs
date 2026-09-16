@@ -1,18 +1,21 @@
 //! DSL v0.6 wave-mob `equipment`: optional worn/held gear on a
 //! [`delvewright_dsl::WaveMob`] — the sanctioned daylight-undead fix is a
 //! helmet, never `set-time`. Validates under `dsl_version 0.6.0`, reserved
-//! (`DW0141`) earlier; slot item ids validate against the pinned 1.21.11 item
+//! slot item ids validate against the pinned 1.21.11 item
 //! registry (`DW0143`, the give-item family); an unknown slot name is a schema
 //! rejection (`DW0100`).
 
 mod common;
 
 use delvewright_dsl::{RawCampaign, check_campaign};
+use std::sync::LazyLock;
 
 /// A v0.6 quests document with a wave whose zombie wears boots and carries a
 /// sword (both in the vendored v0 item-registry subset the DSL tests use).
-const QUESTS_V06: &str = r#"{
-  "dsl_version": "0.6.0",
+static QUESTS_V06: LazyLock<String> = LazyLock::new(|| {
+    common::at_dsl_version(
+        r#"{
+  "dsl_version": "%dsl_version%",
   "campaign_id": "hello-world",
   "stage": "quests",
   "content": {
@@ -41,7 +44,9 @@ const QUESTS_V06: &str = r#"{
       }
     ]
   }
-}"#;
+}"#,
+    )
+});
 
 fn campaign_with_quests(quests: &str) -> RawCampaign {
     RawCampaign {
@@ -56,27 +61,17 @@ fn campaign_with_quests(quests: &str) -> RawCampaign {
         layout_graph: None,
         site_plan: None,
         detail_plan: None,
+        design: None,
     }
 }
 
 /// Wave-mob `equipment` with registry-known item ids validates clean under 0.6.0.
 #[test]
 fn wave_equipment_validates_clean() {
-    let diags = check_campaign(&campaign_with_quests(QUESTS_V06));
+    let diags = check_campaign(&campaign_with_quests(QUESTS_V06.as_str()));
     assert!(
         diags.is_empty(),
         "expected zero diagnostics for a v0.6 wave-mob equipment, got: {diags:#?}"
-    );
-}
-
-/// `equipment` under a pre-0.6 quests version is reserved → `DW0141`.
-#[test]
-fn wave_equipment_reserved_before_0_6() {
-    let pre = QUESTS_V06.replacen("\"0.6.0\"", "\"0.5.0\"", 1);
-    let diags = check_campaign(&campaign_with_quests(&pre));
-    assert!(
-        diags.iter().any(|d| d.code == "DW0141"),
-        "wave-mob equipment must be reserved under 0.5.0 (DW0141): {diags:#?}"
     );
 }
 

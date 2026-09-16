@@ -20,6 +20,7 @@ mod common;
 
 use delvewright_dsl::{RawCampaign, check_campaign};
 use serde_json::{Value, json};
+use std::sync::LazyLock;
 
 /// The graph the tests perturb: the hello-world map, at the version stations
 /// need, with three declared places inside its places.
@@ -31,9 +32,11 @@ use serde_json::{Value, json};
 ///
 /// Written by hand rather than generated, so that "the porch owes three names"
 /// is a fact read off this text and not one the checker computed for itself.
-const GRAPH: &str = r#"{
+static GRAPH: LazyLock<String> = LazyLock::new(|| {
+    common::at_dsl_version(
+        r#"{
   "campaign_id": "hello-world",
-  "dsl_version": "0.18.0",
+  "dsl_version": "%dsl_version%",
   "stage": "layout-graph",
   "content": {
     "nodes": [
@@ -75,11 +78,15 @@ const GRAPH: &str = r#"{
       { "quest": "quest/open-the-door", "objective": "obj/exit", "node": "node/hall" }
     ]
   }
-}"#;
+}"#,
+    )
+});
 
-const BRIEF: &str = r#"{
+static BRIEF: LazyLock<String> = LazyLock::new(|| {
+    common::at_dsl_version(
+        r#"{
   "campaign_id": "hello-world",
-  "dsl_version": "0.13.0",
+  "dsl_version": "%dsl_version%",
   "stage": "geometry-brief",
   "content": {
     "facts": [
@@ -87,13 +94,17 @@ const BRIEF: &str = r#"{
         "note": "The site is sixty-four blocks across." }
     ]
   }
-}"#;
+}"#,
+    )
+});
 
 /// A minimal plan: what makes a campaign a site-plan campaign at all, which is
 /// what puts the derived vocabulary in front of the checks.
-const PLAN: &str = r#"{
+static PLAN: LazyLock<String> = LazyLock::new(|| {
+    common::at_dsl_version(
+        r#"{
   "campaign_id": "hello-world",
-  "dsl_version": "0.14.0",
+  "dsl_version": "%dsl_version%",
   "stage": "site-plan",
   "content": {
     "region": { "min": [0, 60, 0], "extent": [64, 24, 64] },
@@ -114,7 +125,9 @@ const PLAN: &str = r#"{
     ],
     "seams": []
   }
-}"#;
+}"#,
+    )
+});
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -153,6 +166,7 @@ fn campaign(graph: String) -> RawCampaign {
         ),
         site_plan: Some(PLAN.to_string()),
         detail_plan: None,
+        design: None,
         layout_graph: Some(graph),
         geometry_brief: Some(BRIEF.to_string()),
         ..base
@@ -161,7 +175,7 @@ fn campaign(graph: String) -> RawCampaign {
 
 /// Validate the green campaign with the GRAPH perturbed by one edit.
 fn graph_with(patch: impl FnOnce(&mut Value)) -> Vec<delvewright_dsl::Diagnostic> {
-    let mut v: Value = serde_json::from_str(GRAPH).expect("the green graph parses");
+    let mut v: Value = serde_json::from_str(GRAPH.as_str()).expect("the green graph parses");
     patch(&mut v);
     check_campaign(&campaign(serde_json::to_string(&v).expect("re-serialize")))
 }
@@ -188,7 +202,7 @@ fn the_green_graph_declares_three_stations_and_validates() {
     let d = graph_with(|_| {});
     let stationy: Vec<_> = d
         .iter()
-        .filter(|x| matches!(x.code.as_str(), "DW0869" | "DW0870" | "DW0871" | "DW0141"))
+        .filter(|x| matches!(x.code.as_str(), "DW0869" | "DW0870" | "DW0871"))
         .collect();
     assert!(
         stationy.is_empty(),
@@ -393,7 +407,7 @@ fn dw0871s_remedy_is_reachable() {
         "precondition: the wrong shape is refused"
     );
     // Now perform the remedy the message names.
-    let mut v: Value = serde_json::from_str(GRAPH).expect("parses");
+    let mut v: Value = serde_json::from_str(GRAPH.as_str()).expect("parses");
     v["content"]["nodes"][1]["stations"][0]["kind"] = json!("point");
     base.layout_graph = Some(serde_json::to_string(&v).expect("re-serialize"));
     let after = check_campaign(&base);
@@ -405,46 +419,8 @@ fn dw0871s_remedy_is_reachable() {
 }
 
 // ---------------------------------------------------------------------------
-// §7.6 — the per-stage fence
+// §7.6
 // ---------------------------------------------------------------------------
-
-/// A graph declaring `stations[]` below `STATIONS_SINCE` is refused, and the
-/// refusal names the version to raise it to.
-#[test]
-fn the_fence_refuses_stations_below_the_version() {
-    let d = graph_with(|v| {
-        v["dsl_version"] = json!("0.17.0");
-    });
-    let hit = d.iter().find(|x| x.code == "DW0141");
-    assert!(hit.is_some(), "expected the fence: {:?}", codes(&d));
-    assert!(
-        hit.unwrap()
-            .message
-            .contains(delvewright_dsl::STATIONS_SINCE),
-        "the fence must name the version to raise to: {}",
-        hit.unwrap().message
-    );
-}
-
-/// The other direction, and the half that makes the fence a fence rather than a
-/// blanket refusal: **a graph below the version that declares no station is
-/// untouched**.
-#[test]
-fn the_fence_leaves_a_graph_with_no_station_alone() {
-    let d = graph_with(|v| {
-        v["dsl_version"] = json!("0.13.0");
-        for i in 0..6 {
-            if let Some(o) = v["content"]["nodes"][i].as_object_mut() {
-                o.remove("stations");
-            }
-        }
-    });
-    assert!(
-        !codes(&d).contains(&"DW0141"),
-        "a graph declaring no station must not meet the fence: {:?}",
-        codes(&d)
-    );
-}
 
 // ---------------------------------------------------------------------------
 // The perturbations: is each rule's SAFETY what the green depends on?

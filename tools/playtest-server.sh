@@ -15,6 +15,14 @@
 # --acknowledge-red <N>` overrides deliberately — it prints every class being
 # overridden and stamps the reason into the build's admission token.
 #
+# `--delvec BIN` names an engine outright. WITHOUT it, this script uses the
+# `delvec` already on `PATH` when that binary IS this engine — its `--version`
+# equal to `versions.toml` `[engine].version`, which is what a creator's `Init`
+# puts there (ADR-0023) — and otherwise builds one from source. Either way it
+# prints, in one line, which binary it chose and why, before it builds anything.
+# `tools/lib/delvec-bin.sh` holds the rule and is shared with the other creator
+# step that reaches for `delvec`, `validation/render-shots.sh`.
+#
 # Owner-facing contract: `up` ends by printing the connect address and, if the
 # build ships a resource pack, the pack file name to enable. `down` removes the
 # container, reclaims the staged world directory and prints what it reclaimed
@@ -193,14 +201,21 @@ if [ "$cmd" = "down" ]; then
     # sweep, must still release the port and finish clean.
     echo "staged world already gone: $STAGE_PATH (0 KiB reclaimed)"
   fi
-  # The build output is KEPT, and said rather than silently skipped: it holds the
-  # staging-gate report and the resource pack, which are what the session's
-  # findings are written against. Its path and size are printed so it is a
-  # decision rather than a leak.
+  # The build output is KEPT, and said rather than silently skipped: it holds
+  # the resource pack, and its sibling `.gate` directory holds the staging-gate
+  # report — which is what the session's findings are written against. The
+  # report is a sibling and not a child because this gate measures the build
+  # tree, and a report inside it is a file the next run counts. Both paths and
+  # both sizes are printed so keeping them is a decision rather than a leak.
   BUILD_PATH="$(session_path build-dir)"
   if [ -n "$BUILD_PATH" ] && [ -d "$BUILD_PATH" ]; then
     echo "build output KEPT: $BUILD_PATH ($(human_kib "$(dir_kib "$BUILD_PATH")"))"
-    echo "  it holds staging-gate.md and any resourcepack.zip; remove with: rm -rf $BUILD_PATH"
+    echo "  it holds any resourcepack.zip; remove with: rm -rf $BUILD_PATH"
+    GATE_PATH="${BUILD_PATH%/}.gate"
+    if [ -d "$GATE_PATH" ]; then
+      echo "staging-gate report KEPT: $GATE_PATH ($(human_kib "$(dir_kib "$GATE_PATH")"))"
+      echo "  it holds staging-gate.md; remove with: rm -rf $GATE_PATH"
+    fi
   fi
   rm -f "$SESSION_FILE"
   # Give 25565 back. Cross-shell by construction (`up` ran in another shell), so
@@ -263,11 +278,14 @@ if [ -f "$SESSION_FILE" ]; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-[ -n "$DELVEC" ] || DELVEC="$REPO_ROOT/target/release/delvec"
-if [ ! -x "$DELVEC" ]; then
-  echo "building delvec (release)…"
-  (cd "$REPO_ROOT" && cargo build --release -p delvec --bin delvec >/dev/null)
-fi
+# Which delvec, and why — one line, every run. `--delvec` still names one
+# outright; without it, a `delvec` on PATH at the pinned engine version IS the
+# toolchain the creator's Init established and is used as it stands, and
+# anything else is built from source with the reason printed. The rule, and why
+# the version equality is the whole guard, live in tools/lib/delvec-bin.sh.
+# shellcheck source=tools/lib/delvec-bin.sh
+. "$REPO_ROOT/tools/lib/delvec-bin.sh"
+DELVEC="$(dw_resolve_delvec "$DELVEC" "$REPO_ROOT" "playtest-server")" || exit 1
 if [ -z "$OUT_DIR" ]; then
   OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dw-playtest-out.XXXXXX")"
   # Recorded the instant it exists — an unguessable path nothing else knows about
@@ -292,14 +310,25 @@ echo "delvec ${BUILD_ARGS[*]}"
 # calling it, which is the UNRUN shape — a correct gate whose obligation to run
 # lived in prose. `validation/owner-play.yaml` requires the same admission for
 # the other 25565 binder.
-GATE_ARGS=(--campaign "$CAMPAIGN" --build "$OUT_DIR" --report "$OUT_DIR/staging-gate.md")
+#
+# The report goes BESIDE the build tree, never into it. It names every ledger
+# row, so it prints the strings the ledger's own probes search that tree for —
+# and a run after it landed counted it, added a row, and moved the red count
+# between the run that prints N and the run handed `--acknowledge-red N`. The
+# gate refuses a `--report` inside `--build` outright now; this directory is
+# where the report the refusal asks for goes, and `down` prints its path.
+GATE_DIR="${OUT_DIR%/}.gate"
+mkdir -p "$GATE_DIR"
+GATE_REPORT="$GATE_DIR/staging-gate.md"
+GATE_ARGS=(--campaign "$CAMPAIGN" --build "$OUT_DIR" --report "$GATE_REPORT")
 if [ -n "$STAGE_ANYWAY" ]; then
   [ -n "$ACK_RED" ] || die "--stage-anyway needs --acknowledge-red <N> (the gate prints N)"
   GATE_ARGS+=(--stage-anyway "$STAGE_ANYWAY" --acknowledge-red "$ACK_RED")
 fi
 echo "staging gate: $CAMPAIGN"
+echo "staging gate report: $GATE_REPORT"
 python3 "$REPO_ROOT/tools/staging-gate.py" "${GATE_ARGS[@]}" || die \
-  "staging gate REFUSED this build — not serving it (full table: $OUT_DIR/staging-gate.md)"
+  "staging gate REFUSED this build — not serving it (full table: $GATE_REPORT)"
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/dw-playtest-data.XXXXXX")"
 # Recorded before anything is copied into it, and before the container that will
@@ -311,6 +340,13 @@ cp "$OUT_DIR/server/server.properties" "$STAGE/server.properties"
 printf 'enable-rcon=true\nrcon.password=%s\nrcon.port=25575\n' "$RCON_PW" >> "$STAGE/server.properties"
 CAMP_ID="$(basename "$CAMPAIGN")"
 cp -R "$OUT_DIR/datapack" "$STAGE/world/datapacks/$CAMP_ID"
+# The creator overlay too, when the build emitted one: it is what carries
+# `/trigger dw.note`, and the walk this server exists for is the walk whose
+# findings that trigger stamps. A server that serves the delve and not the
+# overlay tells the creator to mark a finding with a command that is not there.
+if [[ -d "$OUT_DIR/creator-datapack" ]]; then
+  cp -R "$OUT_DIR/creator-datapack" "$STAGE/world/datapacks/$CAMP_ID-creator"
+fi
 
 docker run -d --name "$NAME" -p 25565:25565 \
   -e EULA=TRUE -e TYPE=VANILLA -e VERSION="$MC_VERSION" \
